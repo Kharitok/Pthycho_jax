@@ -120,44 +120,44 @@ plt.tight_layout()
 # %%
 
 
-import jax
-import jax.numpy as jnp
+# import jax
+# import jax.numpy as jnp
 
 
-@jax.jit
-def get_scan_slices(object_array, patch_size, stride):
-    """
-    Extracts 2D slices from a 2D array representing a ptychographic scan.
+# @jax.jit
+# def get_scan_slices(object_array, patch_size, stride):
+#     """
+#     Extracts 2D slices from a 2D array representing a ptychographic scan.
 
-    Args:
-        object_array: (H, W) array.
-        patch_size: Tuple (h, w) of the probe/scan window.
-        stride: Tuple (sy, sx) of the scanning step size.
+#     Args:
+#         object_array: (H, W) array.
+#         patch_size: Tuple (h, w) of the probe/scan window.
+#         stride: Tuple (sy, sx) of the scanning step size.
 
-    Returns:
-        (N, h, w) array of slices, where N is total scan positions.
-    """
-    # conv_general_dilated_patches expects (Batch, Channel, Height, Width)
-    # We add 1 for Batch and 1 for Channel
-    x = object_array[jnp.newaxis, jnp.newaxis, :, :]
+#     Returns:
+#         (N, h, w) array of slices, where N is total scan positions.
+#     """
+#     # conv_general_dilated_patches expects (Batch, Channel, Height, Width)
+#     # We add 1 for Batch and 1 for Channel
+#     x = object_array[jnp.newaxis, jnp.newaxis, :, :]
 
-    # Extract patches
-    patches = jax.lax.conv_general_dilated_patches(
-        lhs=x, filter_shape=patch_size, window_strides=stride, padding="VALID"
-    )
+#     # Extract patches
+#     patches = jax.lax.conv_general_dilated_patches(
+#         lhs=x, filter_shape=patch_size, window_strides=stride, padding="VALID"
+#     )
 
-    # The output shape is (1, 1, N, h, w)
-    # We reshape to (N, h, w)
-    num_patches = patches.shape[2]
-    return patches.reshape((num_patches, patch_size[0], patch_size[1]))
+#     # The output shape is (1, 1, N, h, w)
+#     # We reshape to (N, h, w)
+#     num_patches = patches.shape[2]
+#     return patches.reshape((num_patches, patch_size[0], patch_size[1]))
 
 
-# Example Usage:
-# Object: 100x100, Probe: 16x16, Stride: 8
-obj = jnp.ones((100, 100))
-slices = get_scan_slices(obj, (16, 16), (8, 8))
-print(f"Extracted shape: {slices.shape}")
-# Output: (121, 16, 16) - 121 scan positions
+# # Example Usage:
+# # Object: 100x100, Probe: 16x16, Stride: 8
+# obj = jnp.ones((100, 100))
+# slices = get_scan_slices(obj, (16, 16), (8, 8))
+# print(f"Extracted shape: {slices.shape}")
+# # Output: (121, 16, 16) - 121 scan positions
 
 
 # %%
