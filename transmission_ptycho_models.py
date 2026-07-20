@@ -45,7 +45,7 @@ def fourier_propagator(
     Returns:
         The propagated wavefield at the detector plane.
     """
-    return jnp.fft.fft2(exit_wave, norm="ortho", axis=(-2, -1))
+    return jnp.fft.fft2(exit_wave, norm="ortho", axes=(-2, -1))
 
 
 def fresnel_propagator(
@@ -130,15 +130,15 @@ def construct_point_model_ptycho_transmission(
         raise ValueError(
             f"Invalid probe_type: {probe_type}. Must be 'static' or 'fluctuating'."
         )
-    sample_type = model_parameters.get("sample_type", "identity")
+    sample_type = model_parameters.get("sample_type", "complex")
     if sample_type not in [
-        "identity",
+        "complex",
         "refractive",
         "exp_refractive",
         "tanh_refractive",
     ]:
         raise ValueError(
-            f"Invalid sample_type: {sample_type}. Must be 'identity', 'refractive', 'exp_refractive', or 'tanh_refractive'."
+            f"Invalid sample_type: {sample_type}. Must be 'complex', 'refractive', 'exp_refractive', or 'tanh_refractive'."
         )
     binning_factor = model_parameters.get("binning_factor", (1, 1))
     shift_margin = model_parameters.get("shift_margin", 1)
@@ -163,7 +163,7 @@ def construct_point_model_ptycho_transmission(
     elif probe_type == "fluctuating":
         probe_constructor = fluctuating_probe
 
-    if sample_type == "identity":
+    if sample_type == "complex":
         sample_scaler = identity_sample_scaler
     elif sample_type == "refractive":
         sample_scaler = refractive_sample_scaler
@@ -220,7 +220,7 @@ def static_probe(
     Returns:
         A static probe as a JAX array.
     """
-    return fixed_params["probe_modes"]
+    return optimizable_params["probe_modes"]
 
 
 def fluctuating_probe(
@@ -310,9 +310,16 @@ def prepare_slicing_sample_selector(
             fixed_params: Dict,
             pos_index: Int32,
         ) -> Complex[Array, "patch_y patch_x"]:
-            pos = fixed_params["sample_positions"][pos_index, ...]
-            corner_pixel = (int(pos[0]), int(pos[1]))
-            patch = extract_patch(sample, corner_pixel, probe_shape)
+            # pos = fixed_params["sample_positions"][pos_index, ...]
+            corner_pixel = fixed_params["sample_positions"][pos_index, ...]
+            patch = extract_patch(
+                sample,
+                corner_pixel,
+                (
+                    int(probe_shape[0] + 2 * crop_from_side),
+                    int(probe_shape[1] + 2 * crop_from_side),
+                ),
+            )
 
             return patch
 
@@ -324,9 +331,16 @@ def prepare_slicing_sample_selector(
             fixed_params: Dict,
             pos_index: Int32,
         ) -> Complex[Array, "patch_y patch_x"]:
-            pos = fixed_params["sample_positions"][pos_index, ...]
-            corner_pixel = (int(pos[0]), int(pos[1]))
-            patch = extract_patch(sample, corner_pixel, probe_shape)
+            # pos = fixed_params["sample_positions"][pos_index, ...]
+            corner_pixel = fixed_params["sample_positions"][pos_index, ...]
+            patch = extract_patch(
+                sample,
+                corner_pixel,
+                (
+                    int(probe_shape[0] + 2 * crop_from_side),
+                    int(probe_shape[1] + 2 * crop_from_side),
+                ),
+            )
             patch = crop_patch(patch, crop_from_side)
             return patch
 
@@ -356,9 +370,16 @@ def prepare_correcting_sample_selector(
         fixed_params: Dict,
         pos_index: Int32,
     ) -> Complex[Array, "patch_y patch_x"]:
-        pos = fixed_params["sample_positions"][pos_index, ...]
-        corner_pixel = (int(pos[0]), int(pos[1]))
-        patch = extract_patch(sample, corner_pixel, probe_shape)
+        # pos = fixed_params["sample_positions"][pos_index, ...]
+        corner_pixel = fixed_params["sample_positions"][pos_index, ...]
+        patch = extract_patch(
+            sample,
+            corner_pixel,
+            (
+                int(probe_shape[0] + 2 * crop_from_side),
+                int(probe_shape[1] + 2 * crop_from_side),
+            ),
+        )
         shifts = optimizable_params["scan_mistakes"][pos_index, ...]
         patch = fourier_shift(patch, shifts)
         patch = crop_patch(patch, crop_from_side)
