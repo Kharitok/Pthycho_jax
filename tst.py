@@ -8,6 +8,7 @@ import random
 from scipy.ndimage import zoom
 
 os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.3"
+import time
 from typing import Callable, Dict, Tuple
 
 import jax
@@ -17,7 +18,7 @@ import numpy as np
 import optax
 from scipy.ndimage import gaussian_filter
 from skimage import data
-import time
+
 # %%
 
 
@@ -87,7 +88,7 @@ model_parameters = {
     "sample_type": "complex",
     "binning_factor": (1, 1),
     "shift_margin": 4,
-    "sample_selector_type": "slicing",
+    "sample_selector_type": "correcting",
     "propagator_type": "Fourrier",
     "probe_shape": (probe_size, probe_size),
 }
@@ -431,12 +432,20 @@ params_host = jax.device_get(params)
 plt.imshow(jnp.abs(params_host["sample"]), cmap="gray")
 # %%
 
+opt_params_per_leaf = {
+    "sample": {"type": "adam", "learning_rate": 1e-1},
+    "probe_modes": {"type": "adam", "learning_rate": 0},
+    "modal_weights": {"type": "adam", "learning_rate": 0},
+    "scan_mistakes": {"type": "adam", "learning_rate": 1e-2},
+}
 
+optimizer = prepare_optimizer(opt_params_per_leaf)
 
 
 from optim_loop import run_optimization_loop
 
 params = diff_params
+params['scan_mistakes'] = (jnp.zeros((n_pos, 2)) + np.random.randn(n_pos, 2)).astype(jnp.float32)
 opt_state = optimizer.init(params)
 
 measured_pool = jnp.sqrt(I_batched[:50])  # shape [n_positions, H, W]
@@ -458,7 +467,7 @@ params, opt_state, loss_hist = run_optimization_loop(
     measured_batch_pool=batch_measured,
     mask=mask,
     mode="accumulate_full_pass",
-    n_steps=50,      # epochs
+    n_steps=250,      # epochs
     batch_size=50,    # memory-fit batch
     seed=0,
     shuffle_each_epoch=True,
@@ -467,7 +476,7 @@ params, opt_state, loss_hist = run_optimization_loop(
 
 plt.plot(loss_hist)
 plt.show()
-plt.imshow(jnp.abs(params["sample"]), cmap="gray")
+plt.imshow(jnp.abs(params["sample"])[30:100,40:110], cmap="turbo")
 plt.show()
 #%%
 # Mode 2: update every batch, no repeats within each epoch
@@ -514,4 +523,9 @@ plt.plot(loss_hist)
 plt.show()
 plt.imshow(jnp.abs(params["sample"]), cmap="gray")
 plt.show()
+# %%
+
+
+import projectors as pj
+
 # %%
