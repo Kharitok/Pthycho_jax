@@ -22,7 +22,9 @@ TrainMode = Literal[
 
 
 def prepare_opt_step(
-    optimizer: optax.GradientTransformation, loss_and_grad_fn: Callable
+    optimizer: optax.GradientTransformation,
+    loss_and_grad_fn: Callable,
+    projection_fn: Callable,
 ) -> Callable:
     """
     Prepares an optimization step function that computes the loss and gradients,
@@ -49,7 +51,7 @@ def prepare_opt_step(
         batch_idx: jnp.ndarray,
         batch_measured: jnp.ndarray,
         mask: jnp.ndarray,
-    ) -> tuple[PyTree, optax.OptState, jnp.ndarray]:
+    ) -> tuple[PyTree, optax.OptState, dict[str, Any], jnp.ndarray]:
         loss, grads = loss_and_grad_fn(
             params,
             non_diff_params,
@@ -60,14 +62,17 @@ def prepare_opt_step(
 
         updates, opt_state = optimizer.update(grads, opt_state, params)
         params = optax.apply_updates(params, updates)
+        params, non_diff_params = projection_fn(params, non_diff_params)
 
-        return params, opt_state, loss
+        return params, opt_state, non_diff_params, loss
 
     return opt_step
 
 
 def prepare_sharded_opt_step(
-    optimizer: optax.GradientTransformation, loss_and_grad_fn: Callable
+    optimizer: optax.GradientTransformation,
+    loss_and_grad_fn: Callable,
+    projection_fn: Callable,
 ) -> Callable:
     """Prepares a sharded optimization step that gathers the batch on device."""
 
@@ -79,7 +84,7 @@ def prepare_sharded_opt_step(
         measured_batch_pool: jnp.ndarray,
         batch_idx: jnp.ndarray,
         mask: jnp.ndarray,
-    ) -> tuple[PyTree, optax.OptState, jnp.ndarray]:
+    ) -> tuple[PyTree, optax.OptState, dict[str, Any], jnp.ndarray]:
         batch_measured = measured_batch_pool[batch_idx]
         loss, grads = loss_and_grad_fn(
             params,
@@ -91,14 +96,17 @@ def prepare_sharded_opt_step(
 
         updates, opt_state = optimizer.update(grads, opt_state, params)
         params = optax.apply_updates(params, updates)
+        params, non_diff_params = projection_fn(params, non_diff_params)
 
-        return params, opt_state, loss
+        return params, opt_state, non_diff_params, loss
 
     return opt_step
 
 
 def prepare_sharded_accumulate_epoch(
-    optimizer: optax.GradientTransformation, loss_and_grad_fn: Callable
+    optimizer: optax.GradientTransformation,
+    loss_and_grad_fn: Callable,
+    projection_fn: Callable,
 ) -> Callable:
     """Builds one sharded full-pass epoch with a single optimizer update."""
 
@@ -110,7 +118,7 @@ def prepare_sharded_accumulate_epoch(
         measured_batch_pool: jnp.ndarray,
         epoch_batch_idx: jnp.ndarray,
         mask: jnp.ndarray,
-    ) -> tuple[PyTree, optax.OptState, jnp.ndarray]:
+    ) -> tuple[PyTree, optax.OptState, dict[str, Any], jnp.ndarray]:
         batch_weight = epoch_batch_idx.shape[1]
         init_grads = jax.tree.map(jnp.zeros_like, params)
         init_weighted_loss = jnp.array(0.0, dtype=jnp.float32)
@@ -146,9 +154,10 @@ def prepare_sharded_accumulate_epoch(
         )
         updates, opt_state = optimizer.update(mean_grads, opt_state, params)
         params = optax.apply_updates(params, updates)
+        params, non_diff_params = projection_fn(params, non_diff_params)
         mean_loss = weighted_loss_sum / total_items
 
-        return params, opt_state, mean_loss
+        return params, opt_state, non_diff_params, mean_loss
 
     return accumulate_epoch
 
@@ -240,6 +249,7 @@ def run_optimization_loop(
     seed: int = 0,
     shuffle_each_epoch: bool = True,
     use_multigpu: bool = False,
+    projection_fn: Callable | None = None,
 ) -> tuple[PyTree, optax.OptState, jnp.ndarray]:
     """
     Runs optimization with configurable gradient/update modes.
@@ -286,6 +296,10 @@ def run_optimization_loop(
     use_multigpu:
         If True, shard the measurement pool once, replicate params and optimizer
         state once, and run the optimization against those sharded arrays.
+    projection_fn:
+        Optional projection callback with signature
+        (params, non_diff_params) -> (params, non_diff_params).
+        If provided, it is applied after each optimizer update.
 
     Returns
     -------
@@ -306,6 +320,14 @@ def run_optimization_loop(
 
     key = jax.random.PRNGKey(seed)
     loss_values = []
+
+    if projection_fn is None:
+
+        def effective_projection_fn(params: PyTree, non_diff_params: dict[str, Any]):
+            return params, non_diff_params
+
+    else:
+        effective_projection_fn = projection_fn
 
     if use_multigpu:
         n_devices = jax.local_device_count()
@@ -337,10 +359,15 @@ def run_optimization_loop(
             mask,
         )
 
-        sharded_opt_step = prepare_sharded_opt_step(optimizer, loss_and_grad_fn)
+        sharded_opt_step = prepare_sharded_opt_step(
+            optimizer,
+            loss_and_grad_fn,
+            effective_projection_fn,
+        )
         sharded_accumulate_epoch = prepare_sharded_accumulate_epoch(
             optimizer,
             loss_and_grad_fn,
+            effective_projection_fn,
         )
 
         if mode == "accumulate_full_pass":
@@ -354,7 +381,7 @@ def run_optimization_loop(
             epoch_schedule = jax.device_put(epoch_schedule, replicated_sharding)
 
             for epoch_idx in range(n_steps):
-                params, opt_state, loss_val = sharded_accumulate_epoch(
+                params, opt_state, non_diff_params, loss_val = sharded_accumulate_epoch(
                     params,
                     opt_state,
                     non_diff_params,
@@ -376,7 +403,7 @@ def run_optimization_loop(
             batch_schedule = jax.device_put(batch_schedule, replicated_sharding)
 
             for step_idx in range(batch_schedule.shape[0]):
-                params, opt_state, loss_val = sharded_opt_step(
+                params, opt_state, non_diff_params, loss_val = sharded_opt_step(
                     params,
                     opt_state,
                     non_diff_params,
@@ -396,7 +423,7 @@ def run_optimization_loop(
             batch_schedule = jax.device_put(batch_schedule, replicated_sharding)
 
             for step_idx in range(n_steps):
-                params, opt_state, loss_val = sharded_opt_step(
+                params, opt_state, non_diff_params, loss_val = sharded_opt_step(
                     params,
                     opt_state,
                     non_diff_params,
@@ -421,7 +448,11 @@ def run_optimization_loop(
             ),
         )
 
-    opt_step = prepare_opt_step(optimizer, loss_and_grad_fn)
+    opt_step = prepare_opt_step(
+        optimizer,
+        loss_and_grad_fn,
+        effective_projection_fn,
+    )
     if mode == "accumulate_full_pass":
         n_full_batches = n_positions // batch_size
         remainder = n_positions % batch_size
@@ -510,6 +541,7 @@ def run_optimization_loop(
             )
             updates, opt_state = optimizer.update(mean_grads, opt_state, params)
             params = optax.apply_updates(params, updates)
+            params, non_diff_params = effective_projection_fn(params, non_diff_params)
 
             loss_values.append(float(weighted_loss_sum / total_items))
 
@@ -525,7 +557,7 @@ def run_optimization_loop(
                 batch_idx = order[start : start + batch_size].astype(jnp.int32)
                 batch_measured = measured_batch_pool[batch_idx]
 
-                params, opt_state, loss_val = opt_step(
+                params, opt_state, non_diff_params, loss_val = opt_step(
                     params,
                     opt_state,
                     non_diff_params,
@@ -547,7 +579,7 @@ def run_optimization_loop(
             )
             batch_measured = measured_batch_pool[batch_idx]
 
-            params, opt_state, loss_val = opt_step(
+            params, opt_state, non_diff_params, loss_val = opt_step(
                 params,
                 opt_state,
                 non_diff_params,
