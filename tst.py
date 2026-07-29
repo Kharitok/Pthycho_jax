@@ -54,11 +54,27 @@ plt.axis("off")
 plt.show()
 
 p_image = data.gravel().astype(jnp.float32)  # Normalize to [0, 1]
+n_modes = 3
+modes = []
+for mode in range(n_modes):
+    modes.append(p_image[probe_size*mode:probe_size*(mode+1),probe_size*mode:probe_size*(mode+1)])
+
+
 p_image = p_image[:probe_size, :probe_size]
 probe_mask = np.zeros((probe_size, probe_size))
 probe_mask[
     probe_size // 4 : 3 * probe_size // 4, probe_size // 4 : 3 * probe_size // 4
 ] = 1
+
+
+modes = np.stack(modes, axis=0)
+modes = np.abs(modes)*np.exp(1j*2*np.pi*np.swapaxes(modes/modes.max(), -1, -2))
+modes = modes*probe_mask[None, :, :]
+
+
+
+
+
 
 # %%
 true_probe = (
@@ -73,7 +89,7 @@ true_scan_positions = np.random.randint(0, obj_size - (5 + probe_size), size=(n_
 
 true_diff_params = {
     "sample": true_sample,
-    "probe_modes": true_probe,
+    "probe_modes": modes,#true_probe,
     "modal_weights": jnp.ones((1, 1)),
     "scan_mistakes": jnp.zeros((n_pos, 2)).astype(jnp.float32),
 }
@@ -139,7 +155,7 @@ from loss_and_reg import (
 # init_params
 diff_params = {
     "sample": jnp.ones_like(true_sample),
-    "probe_modes": jnp.asarray(true_probe.copy()),
+    "probe_modes": jnp.asarray(modes.copy()),
     "modal_weights": jnp.ones((1, 1)),
     "scan_mistakes": jnp.zeros((n_pos, 2)).astype(jnp.float32),
 }
@@ -232,7 +248,7 @@ optimizer = prepare_optimizer(opt_params_per_leaf)
 #%%
 diff_params = {
     "sample": jnp.ones_like(true_sample),
-    "probe_modes": jnp.asarray(true_probe.copy()),
+    "probe_modes": jnp.asarray(modes.copy()),
     "modal_weights": jnp.ones((1, 1)),
     "scan_mistakes": jnp.zeros((n_pos, 2)).astype(jnp.float32),
 }
@@ -435,7 +451,7 @@ plt.imshow(jnp.abs(params_host["sample"]), cmap="gray")
 
 opt_params_per_leaf = {
     "sample": {"type": "adam", "learning_rate": 1e0},
-    "probe_modes": {"type": "adam", "learning_rate": 1e1},
+    "probe_modes": {"type": "adam", "learning_rate": 1e0},
     "modal_weights": {"type": "adam", "learning_rate": 0},
     "scan_mistakes": {"type": "adam", "learning_rate": 1e-2},
 }
@@ -451,8 +467,8 @@ from optim_loop import run_optimization_loop
 
 params = diff_params
 params['scan_mistakes'] = (jnp.zeros((n_pos, 2)) + np.random.randn(n_pos, 2)*0.3).astype(jnp.float32)
-r_noise = (np.random.randn(*true_probe.shape)*80).astype(jnp.float32)
-params['probe_modes'] = jnp.asarray(true_probe.copy()) + (r_noise - r_noise.mean())
+r_noise = (np.random.randn(*modes.shape)*80).astype(jnp.float32)
+params['probe_modes'] = jnp.asarray(modes.copy()) + (r_noise - r_noise.mean())
 non_diff_params = {
     "sample_positions":  jnp.asarray(true_scan_positions + np.random.randint(-2, 2, true_scan_positions.shape), dtype=jnp.int32),
 }
@@ -472,9 +488,17 @@ reg_s_tv = create_regularizer(
                                diff_params_name='sample',
                                  reg_weight_name='tv_sample_weight',
                                  reg_func = create_tv_reg(p=2,q= 2,conv_func = jnp.angle))
+
+reg_p_tv = create_regularizer(
+                               diff_params_name='probe_modes',
+                                 reg_weight_name='tv_probe_modes_weight',
+                                 reg_func = create_tv_reg(p=2,q= 2,conv_func = jnp.abs))
+
+reg_s_tv = combine_regularizers([reg_s_tv, reg_p_tv])
 reg_loss = join_loss_and_reg(get_loss_v, reg_s_tv)
 get_loss_and_grad_v = jax.jit(jax.value_and_grad(reg_loss, argnums=0))
-non_diff_params['tv_sample_weight'] = 1e1
+non_diff_params['tv_sample_weight'] = 1e-1
+non_diff_params['tv_probe_modes_weight'] = 1e-2
 ###
 
 
@@ -552,6 +576,20 @@ if params["probe_modes"].ndim <3:
     plt.imshow(jnp.angle(params["probe_modes"]), cmap="turbo")
     #switch off axis 
     plt.axis("off")
+    plt.tight_layout()
+    plt.show()
+else:
+    n_modes = params["probe_modes"].shape[0]
+    plt.figure(figsize=(12, 4))
+    for i in range(n_modes):
+        plt.subplot(2, n_modes, i + 1)
+        plt.imshow(jnp.abs(params["probe_modes"][i]), cmap="viridis")
+        plt.axis("off")
+        plt.title(f"Mode {i+1} Abs")
+        plt.subplot(2, n_modes, n_modes + i + 1)
+        plt.imshow(jnp.angle(params["probe_modes"][i]), cmap="twilight")
+        plt.axis("off")
+        plt.title(f"Mode {i+1} Angle")
     plt.tight_layout()
     plt.show()
 #%%
