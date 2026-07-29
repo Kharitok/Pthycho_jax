@@ -71,9 +71,11 @@ modes = np.stack(modes, axis=0)
 modes = np.abs(modes)*np.exp(1j*2*np.pi*np.swapaxes(modes/modes.max(), -1, -2))
 modes = modes*probe_mask[None, :, :]
 
+Q, R = np.linalg.qr(modes.reshape(n_modes, -1).T, mode='reduced')
 
 
-
+modes_ortho = Q.T.reshape(n_modes, probe_size, probe_size)*4e3
+modes = modes_ortho
 
 
 # %%
@@ -469,6 +471,8 @@ params = diff_params
 params['scan_mistakes'] = (jnp.zeros((n_pos, 2)) + np.random.randn(n_pos, 2)*0.3).astype(jnp.float32)
 r_noise = (np.random.randn(*modes.shape)*80).astype(jnp.float32)
 params['probe_modes'] = jnp.asarray(modes.copy()) + (r_noise - r_noise.mean())
+
+
 non_diff_params = {
     "sample_positions":  jnp.asarray(true_scan_positions + np.random.randint(-2, 2, true_scan_positions.shape), dtype=jnp.int32),
 }
