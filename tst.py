@@ -67,7 +67,7 @@ true_probe = (
 true_sample = (0.5 + np.abs(image) / np.abs(image).max()) * np.exp(
     1j * 2 * np.pi * (image.T / image.max())
 )
-
+true_sample = true_sample/np.abs(true_sample).max()
 true_scan_positions = np.random.randint(0, obj_size - (5 + probe_size), size=(n_pos, 2))
 # %%
 
@@ -434,7 +434,7 @@ plt.imshow(jnp.abs(params_host["sample"]), cmap="gray")
 # %%
 
 opt_params_per_leaf = {
-    "sample": {"type": "adam", "learning_rate": 1e-1},
+    "sample": {"type": "adam", "learning_rate": 1e0},
     "probe_modes": {"type": "adam", "learning_rate": 1e1},
     "modal_weights": {"type": "adam", "learning_rate": 0},
     "scan_mistakes": {"type": "adam", "learning_rate": 1e-2},
@@ -474,7 +474,7 @@ reg_s_tv = create_regularizer(
                                  reg_func = create_tv_reg(p=2,q= 2,conv_func = jnp.angle))
 reg_loss = join_loss_and_reg(get_loss_v, reg_s_tv)
 get_loss_and_grad_v = jax.jit(jax.value_and_grad(reg_loss, argnums=0))
-non_diff_params['tv_sample_weight'] = 1e0
+non_diff_params['tv_sample_weight'] = 1e1
 ###
 
 
@@ -482,7 +482,7 @@ import projectors as pj
 from optim_loop import run_optimization_loop
 
 proj_sample_clip = pj.create_projection_applier(
-    pj.create_limiter_scaling_complex(jnp.abs(true_sample).max(), jnp.abs(true_sample).min()),
+    pj.create_modulus_clipper(jnp.abs(true_sample).max(), 0),
     diff_param_name = 'sample'
 )
 
@@ -502,7 +502,7 @@ proj_shift_rounder = pj.create_projection_applier(
     non_diff_param_name='sample_positions'
 )
 
-projector = pj.merge_multiple_projections([ proj_shift_rounder])
+projector = pj.merge_multiple_projections([ proj_shift_rounder,proj_sample_clip])
 ###
 
 
@@ -533,6 +533,7 @@ plt.figure()
 # show abs and angle of the sample
 plt.subplot(1, 2, 1)
 plt.imshow(jnp.abs(params["sample"]), cmap="turbo")#[30:100,40:110]
+plt.colorbar()
 plt.axis("off")
 plt.subplot(1, 2, 2)
 plt.imshow(jnp.angle(params["sample"]), cmap="turbo")
@@ -588,7 +589,7 @@ params, opt_state, loss_hist = run_optimization_loop(
     mask=mask,
     mode="random_with_replacement",
     n_steps=100,     # update steps
-    batch_size=20,
+    batch_size=40,
     seed=0,
     shuffle_each_epoch=True,  # ignored in this mode
     use_multigpu = True
