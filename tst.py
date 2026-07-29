@@ -435,7 +435,7 @@ plt.imshow(jnp.abs(params_host["sample"]), cmap="gray")
 
 opt_params_per_leaf = {
     "sample": {"type": "adam", "learning_rate": 1e-1},
-    "probe_modes": {"type": "adam", "learning_rate": 0},
+    "probe_modes": {"type": "adam", "learning_rate": 1e1},
     "modal_weights": {"type": "adam", "learning_rate": 0},
     "scan_mistakes": {"type": "adam", "learning_rate": 1e-2},
 }
@@ -451,7 +451,8 @@ from optim_loop import run_optimization_loop
 
 params = diff_params
 params['scan_mistakes'] = (jnp.zeros((n_pos, 2)) + np.random.randn(n_pos, 2)*0.3).astype(jnp.float32)
-
+r_noise = (np.random.randn(*true_probe.shape)*80).astype(jnp.float32)
+params['probe_modes'] = jnp.asarray(true_probe.copy()) + (r_noise - r_noise.mean())
 non_diff_params = {
     "sample_positions":  jnp.asarray(true_scan_positions + np.random.randint(-2, 2, true_scan_positions.shape), dtype=jnp.int32),
 }
@@ -489,26 +490,6 @@ proj_scan_limit = pj.create_projection_applier(
     pj.create_shift_limiter(max_allowed_shift=10,initial_positions=non_diff_params['sample_positions']),
     non_diff_param_name='sample_positions'
 )
-
-
-
-# def create_shift_rounder(max_correction_magnitude, rounding_step):
-#     """
-#     Creates projection which rounds values of the differenctiable sub-pixel shift correction up to the nearest multiple of rounding_step
-#     and modifies non-differentiable pixel selector to account for the shift.
-#     This allows to keep only smaller than rounding_step corrections in differentiable part.
-#     "max_correction_magnitude" determines maximal magnitude of the differentiable shift corrector to correctly work with non-linear mapping in shifter
-#     """
-
-#     def round_shifts(fractual, whole):
-#         fractual = jnp.tanh(fractual) * max_correction_magnitude
-#         corr = jnp.sign(fractual) * rounding_step * (jnp.abs(fractual) // rounding_step)
-#         whole = whole + corr
-#         fractual = fractual - corr
-#         fractual = jnp.atanh(fractual / max_correction_magnitude)
-#         return jnp.float32(fractual), jnp.int16(whole)
-
-#     return jax.jit(round_shifts, donate_argnames=["whole", "fractual"])
 
 
 
@@ -559,6 +540,19 @@ plt.imshow(jnp.angle(params["sample"]), cmap="turbo")
 plt.axis("off")
 plt.tight_layout()
 plt.show()
+plt.figure()
+if params["probe_modes"].ndim <3:
+    plt.figure()
+    # show abs and angle of the sample
+    plt.subplot(1, 2, 1)
+    plt.imshow(jnp.abs(params["probe_modes"]), cmap="turbo")#[30:100,40:110]
+    plt.axis("off")
+    plt.subplot(1, 2, 2)
+    plt.imshow(jnp.angle(params["probe_modes"]), cmap="turbo")
+    #switch off axis 
+    plt.axis("off")
+    plt.tight_layout()
+    plt.show()
 #%%
 # Mode 2: update every batch, no repeats within each epoch
 params, opt_state, loss_hist = run_optimization_loop(
@@ -571,7 +565,7 @@ params, opt_state, loss_hist = run_optimization_loop(
     mask=mask,
     mode="sequential_no_repeats",
     n_steps=250,      # epochs
-    batch_size=10,
+    batch_size=30,
     seed=0,
     shuffle_each_epoch=True,
     use_multigpu = False
