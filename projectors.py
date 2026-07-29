@@ -92,8 +92,37 @@ def create_limiter_scaling_complex(
         max_module = module.max()
         # Avoid division by zero
         max_module = jnp.where(max_module > 0, max_module, 1.0)
-        scaled = module / max_module * (max_mod_val - min_mod_val) + min_mod_val
+        scaled = (module / max_module) * (max_mod_val - min_mod_val) + min_mod_val
         return jnp.exp(1j * jnp.angle(x)) * scaled
+
+    return jax.jit(proj_func, donate_argnames=["x"])
+
+
+def create_modulus_clipper(
+    max_mod_val: float = 1.0, min_mod_val: float = 0.0
+) -> Callable:
+    """
+    Creates a projection that strictly clamps the modulus of a complex array
+    between min and max values, preserving phase efficiently.
+    """
+
+    def proj_func(x: jnp.ndarray) -> jnp.ndarray:
+        mod = jnp.abs(x)
+
+        # 1. Pixel-wise clipping (leaves valid pixels completely untouched)
+        mod_clipped = jnp.clip(mod, min=min_mod_val, max=max_mod_val)
+
+        # 2. Safe division to prevent NaNs at exactly zero amplitude
+        # If mod is 0, we substitute 1.0 for the denominator.
+        # (Since x is 0, the numerator x will safely zero out the result anyway).
+        safe_mod = jnp.where(mod > 0, mod, 1.0)
+
+        # 3. Apply the scaling ratio directly to the complex number
+        # No trig functions (angle/exp) required!
+        scaling_ratio = mod_clipped / safe_mod
+
+        # jax will broadcast the real ratio across the complex array
+        return x * scaling_ratio
 
     return jax.jit(proj_func, donate_argnames=["x"])
 
