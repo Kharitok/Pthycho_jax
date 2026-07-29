@@ -46,3 +46,97 @@ def prepare_optimizer(opt_params_per_leaf: Dict) -> optax.GradientTransformation
         conj_grads(),
         optax.multi_transform(transforms, label_fn),
     )
+
+
+
+
+
+###
+# import math
+# import optax
+
+# def estimate_total_updates(mode: str, n_steps: int, n_positions: int, batch_size: int) -> int:
+#     if mode == "random_with_replacement":
+#         return n_steps
+#     if mode == "accumulate_full_pass":
+#         return n_steps  # one update per epoch
+#     if mode == "sequential_no_repeats":
+#         return n_steps * math.ceil(n_positions / batch_size)
+#     raise ValueError(f"Unknown mode: {mode}")
+
+# # Match these to your run_optimization_loop call
+# mode = "sequential_no_repeats"
+# n_steps = 50
+# batch_size = 10
+# n_positions = measured_pool.shape[0]
+
+# total_updates = estimate_total_updates(mode, n_steps, n_positions, batch_size)
+
+# # Milestones
+# warmup_steps = max(10, int(0.05 * total_updates))
+# probe_start = int(0.15 * total_updates)
+# scan_start = int(0.30 * total_updates)
+# scan_ramp = max(10, int(0.10 * total_updates))
+
+# # 1) Sample: warmup -> cosine decay
+# sample_sched = optax.join_schedules(
+#     schedules=[
+#         optax.linear_schedule(
+#             init_value=1e-3,
+#             end_value=1e-1,
+#             transition_steps=warmup_steps,
+#         ),
+#         optax.cosine_decay_schedule(
+#             init_value=1e-1,
+#             decay_steps=max(1, total_updates - warmup_steps),
+#             alpha=0.05,  # final LR is 5% of peak
+#         ),
+#     ],
+#     boundaries=[warmup_steps],
+# )
+
+# # 2) Probe: frozen early -> small exponential decay
+# probe_sched = optax.join_schedules(
+#     schedules=[
+#         optax.constant_schedule(0.0),
+#         optax.exponential_decay(
+#             init_value=2e-3,
+#             transition_steps=max(1, int(0.2 * total_updates)),
+#             decay_rate=0.95,
+#             staircase=False,
+#         ),
+#     ],
+#     boundaries=[probe_start],
+# )
+
+# # 3) Scan mistakes: frozen -> ramp -> decay
+# scan_sched = optax.join_schedules(
+#     schedules=[
+#         optax.constant_schedule(0.0),
+#         optax.linear_schedule(
+#             init_value=0.0,
+#             end_value=1e-2,
+#             transition_steps=scan_ramp,
+#         ),
+#         optax.exponential_decay(
+#             init_value=1e-2,
+#             transition_steps=max(1, int(0.25 * total_updates)),
+#             decay_rate=0.9,
+#             staircase=False,
+#         ),
+#     ],
+#     boundaries=[scan_start, scan_start + scan_ramp],
+# )
+
+# # 4) Modal weights: keep frozen or tiny LR
+# modal_sched = optax.constant_schedule(0.0)
+
+# opt_params_per_leaf = {
+#     "sample": {"type": "adam", "learning_rate": sample_sched},
+#     "probe_modes": {"type": "adam", "learning_rate": probe_sched},
+#     "modal_weights": {"type": "adam", "learning_rate": modal_sched},
+#     "scan_mistakes": {"type": "adam", "learning_rate": scan_sched},
+# }
+
+# optimizer = prepare_optimizer(opt_params_per_leaf)
+# opt_state = optimizer.init(params)

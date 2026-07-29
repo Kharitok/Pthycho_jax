@@ -178,7 +178,11 @@ def construct_point_model_ptycho_transmission(
         )
     elif sample_selector_type == "correcting":
         sample_selector = prepare_correcting_sample_selector(
-            model_parameters["probe_shape"], crop_from_side=shift_margin
+            model_parameters["probe_shape"],
+            crop_from_side=shift_margin,
+            max_correction_magnitude=model_parameters.get(
+                "max_correction_magnitude", 5.0
+            ),
         )
 
     sample_constructor = prepare_sample_constructor(
@@ -348,7 +352,9 @@ def prepare_slicing_sample_selector(
 
 
 def prepare_correcting_sample_selector(
-    probe_shape: Tuple[int, int], crop_from_side: int = 1
+    probe_shape: Tuple[int, int],
+    crop_from_side: int = 1,
+    max_correction_magnitude: float = 5.0,
 ) -> Callable:
     """
     Prepares a sample selector function that selects a patch of the sample based on the probe shape and position index, and applies a Fourier shift correction.
@@ -381,6 +387,9 @@ def prepare_correcting_sample_selector(
             ),
         )
         shifts = optimizable_params["scan_mistakes"][pos_index, ...]
+        shifts = (
+            jnp.tanh(shifts) * max_correction_magnitude
+        )  # Limit the shifts to a maximum value
         patch = fourier_shift(patch, shifts)
         patch = crop_patch(patch, crop_from_side)
         # Apply Fourier shift correction

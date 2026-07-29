@@ -91,6 +91,7 @@ model_parameters = {
     "sample_selector_type": "correcting",
     "propagator_type": "Fourrier",
     "probe_shape": (probe_size, probe_size),
+    'max_correction_magnitude':5
 }
 
 mask = jnp.ones((probe_size, probe_size), dtype=jnp.bool_)
@@ -439,19 +440,89 @@ opt_params_per_leaf = {
     "scan_mistakes": {"type": "adam", "learning_rate": 1e-2},
 }
 
+
+
+
+
 optimizer = prepare_optimizer(opt_params_per_leaf)
 
 
 from optim_loop import run_optimization_loop
 
 params = diff_params
-params['scan_mistakes'] = (jnp.zeros((n_pos, 2)) + np.random.randn(n_pos, 2)).astype(jnp.float32)
+params['scan_mistakes'] = (jnp.zeros((n_pos, 2)) + np.random.randn(n_pos, 2)*0.3).astype(jnp.float32)
+
+non_diff_params = {
+    "sample_positions":  jnp.asarray(true_scan_positions + np.random.randint(-2, 2, true_scan_positions.shape), dtype=jnp.int32),
+}
+
+
 opt_state = optimizer.init(params)
 
 measured_pool = jnp.sqrt(I_batched[:50])  # shape [n_positions, H, W]
 
 
+get_loss_and_grad_v = jax.jit(jax.value_and_grad(get_loss_v, argnums=0))
+get_loss_and_grad_v = jax.jit(jax.value_and_grad(get_loss_v, argnums=0))
 
+from loss_and_reg import create_regularizer, create_tv_reg, join_loss_and_reg
+
+reg_s_tv = create_regularizer(
+                               diff_params_name='sample',
+                                 reg_weight_name='tv_sample_weight',
+                                 reg_func = create_tv_reg(p=2,q= 2,conv_func = jnp.angle))
+reg_loss = join_loss_and_reg(get_loss_v, reg_s_tv)
+get_loss_and_grad_v = jax.jit(jax.value_and_grad(reg_loss, argnums=0))
+non_diff_params['tv_sample_weight'] = 1e0
+###
+
+
+import projectors as pj
+from optim_loop import run_optimization_loop
+
+proj_sample_clip = pj.create_projection_applier(
+    pj.create_limiter_scaling_complex(jnp.abs(true_sample).max(), jnp.abs(true_sample).min()),
+    diff_param_name = 'sample'
+)
+
+proj_scan_limit = pj.create_projection_applier(
+    pj.create_shift_limiter(max_allowed_shift=10,initial_positions=non_diff_params['sample_positions']),
+    non_diff_param_name='sample_positions'
+)
+
+
+
+# def create_shift_rounder(max_correction_magnitude, rounding_step):
+#     """
+#     Creates projection which rounds values of the differenctiable sub-pixel shift correction up to the nearest multiple of rounding_step
+#     and modifies non-differentiable pixel selector to account for the shift.
+#     This allows to keep only smaller than rounding_step corrections in differentiable part.
+#     "max_correction_magnitude" determines maximal magnitude of the differentiable shift corrector to correctly work with non-linear mapping in shifter
+#     """
+
+#     def round_shifts(fractual, whole):
+#         fractual = jnp.tanh(fractual) * max_correction_magnitude
+#         corr = jnp.sign(fractual) * rounding_step * (jnp.abs(fractual) // rounding_step)
+#         whole = whole + corr
+#         fractual = fractual - corr
+#         fractual = jnp.atanh(fractual / max_correction_magnitude)
+#         return jnp.float32(fractual), jnp.int16(whole)
+
+#     return jax.jit(round_shifts, donate_argnames=["whole", "fractual"])
+
+
+
+proj_shift_rounder = pj.create_projection_applier(
+    pj.create_shift_rounder(
+        max_correction_magnitude = 5,
+        rounding_step = 3,
+    ),
+    diff_param_name = 'scan_mistakes',
+    non_diff_param_name='sample_positions'
+)
+
+projector = pj.merge_multiple_projections([ proj_shift_rounder])
+###
 
 
 plt.imshow(jnp.abs(params["sample"]), cmap="gray")
@@ -467,16 +538,26 @@ params, opt_state, loss_hist = run_optimization_loop(
     measured_batch_pool=batch_measured,
     mask=mask,
     mode="accumulate_full_pass",
-    n_steps=250,      # epochs
+    n_steps=500,      # epochs
     batch_size=50,    # memory-fit batch
     seed=0,
     shuffle_each_epoch=True,
+    projection_fn = projector,
     use_multigpu = True
 )
 
 plt.plot(loss_hist)
 plt.show()
-plt.imshow(jnp.abs(params["sample"])[30:100,40:110], cmap="turbo")
+plt.figure()
+# show abs and angle of the sample
+plt.subplot(1, 2, 1)
+plt.imshow(jnp.abs(params["sample"]), cmap="turbo")#[30:100,40:110]
+plt.axis("off")
+plt.subplot(1, 2, 2)
+plt.imshow(jnp.angle(params["sample"]), cmap="turbo")
+#switch off axis 
+plt.axis("off")
+plt.tight_layout()
 plt.show()
 #%%
 # Mode 2: update every batch, no repeats within each epoch
@@ -489,7 +570,7 @@ params, opt_state, loss_hist = run_optimization_loop(
     measured_batch_pool=measured_pool,
     mask=mask,
     mode="sequential_no_repeats",
-    n_steps=50,      # epochs
+    n_steps=250,      # epochs
     batch_size=10,
     seed=0,
     shuffle_each_epoch=True,
@@ -499,7 +580,7 @@ params, opt_state, loss_hist = run_optimization_loop(
 
 plt.plot(loss_hist)
 plt.show()
-plt.imshow(jnp.abs(params["sample"]), cmap="gray")
+plt.imshow(jnp.abs(params["sample"])[30:100,40:110], cmap="turbo")
 plt.show()
 #%%
 # Mode 3: update every random batch (with replacement)
@@ -513,7 +594,7 @@ params, opt_state, loss_hist = run_optimization_loop(
     mask=mask,
     mode="random_with_replacement",
     n_steps=100,     # update steps
-    batch_size=10,
+    batch_size=20,
     seed=0,
     shuffle_each_epoch=True,  # ignored in this mode
     use_multigpu = True
