@@ -105,7 +105,7 @@ model_parameters = {
     "probe_type": "static",
     "sample_type": "complex",
     "binning_factor": (1, 1),
-    "shift_margin": 4,
+    "shift_margin": 10,
     "sample_selector_type": "correcting",
     "propagator_type": "Fourrier",
     "probe_shape": (probe_size, probe_size),
@@ -501,8 +501,8 @@ reg_p_tv = create_regularizer(
 reg_s_tv = combine_regularizers([reg_s_tv, reg_p_tv])
 reg_loss = join_loss_and_reg(get_loss_v, reg_s_tv)
 get_loss_and_grad_v = jax.jit(jax.value_and_grad(reg_loss, argnums=0))
-non_diff_params['tv_sample_weight'] = 1e-1
-non_diff_params['tv_probe_modes_weight'] = 1e-2
+non_diff_params['tv_sample_weight'] = 0
+non_diff_params['tv_probe_modes_weight'] = 0
 ###
 
 
@@ -530,7 +530,7 @@ proj_shift_rounder = pj.create_projection_applier(
     non_diff_param_name='sample_positions'
 )
 
-projector = pj.merge_multiple_projections([ proj_shift_rounder,proj_sample_clip])
+projector = pj.merge_multiple_projections([ proj_shift_rounder,])
 ###
 
 
@@ -560,7 +560,7 @@ plt.show()
 plt.figure()
 # show abs and angle of the sample
 plt.subplot(1, 2, 1)
-plt.imshow(jnp.abs(params["sample"]), cmap="turbo")#[30:100,40:110]
+plt.imshow(jnp.abs(params["sample"])[30:100,40:110], cmap="turbo")#[30:100,40:110]
 plt.colorbar()
 plt.axis("off")
 plt.subplot(1, 2, 2)
