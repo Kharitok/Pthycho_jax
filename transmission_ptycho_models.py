@@ -281,6 +281,24 @@ def extract_patch(
     return patch
 
 
+def window_edge_taper(patch: jax.Array, taper_pixels: int = 4) -> jax.Array:
+    """Applies a smooth cosine decay to the edges of the patch."""
+    Ny, Nx = patch.shape
+
+    # Create 1D masks
+    y_mask = jnp.sin(jnp.linspace(0, jnp.pi / 2, taper_pixels))
+    x_mask = jnp.sin(jnp.linspace(0, jnp.pi / 2, taper_pixels))
+
+    # Pad central region with ones
+    win_y = jnp.concatenate([y_mask, jnp.ones(Ny - 2 * taper_pixels), y_mask[::-1]])
+    win_x = jnp.concatenate([x_mask, jnp.ones(Nx - 2 * taper_pixels), x_mask[::-1]])
+
+    # Outer product for 2D window
+    window_2d = win_y[:, None] * win_x[None, :]
+
+    return patch * window_2d
+
+
 def fourier_shift(patch, shift):
     dy, dx = shift
     ny, nx = patch.shape[-2:]
@@ -390,6 +408,7 @@ def prepare_correcting_sample_selector(
         shifts = (
             jnp.tanh(shifts) * max_correction_magnitude
         )  # Limit the shifts to a maximum value
+        patch = window_edge_taper(patch, taper_pixels=crop_from_side)
         patch = fourier_shift(patch, shifts)
         patch = crop_patch(patch, crop_from_side)
         # Apply Fourier shift correction
