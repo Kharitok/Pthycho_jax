@@ -92,7 +92,7 @@ true_scan_positions = np.random.randint(0, obj_size - (5 + probe_size), size=(n_
 true_diff_params = {
     "sample": true_sample,
     "probe_modes": modes,#true_probe,
-    "modal_weights": jnp.ones((1, 1)),
+    "modal_weights": jnp.ones((n_pos,modes.shape[0], modes.shape[0])),
     "scan_mistakes": jnp.zeros((n_pos, 2)).astype(jnp.float32),
 }
 
@@ -102,7 +102,7 @@ true_non_diff_params = {
 
 
 model_parameters = {
-    "probe_type": "static",
+    "probe_type": "fluctuating",
     "sample_type": "complex",
     "binning_factor": (1, 1),
     "shift_margin": 10,
@@ -158,7 +158,7 @@ from loss_and_reg import (
 diff_params = {
     "sample": jnp.ones_like(true_sample),
     "probe_modes": jnp.asarray(modes.copy()),
-    "modal_weights": jnp.ones((1, 1)),
+    "modal_weights": jnp.ones((n_pos,modes.shape[0], modes.shape[0])),
     "scan_mistakes": jnp.zeros((n_pos, 2)).astype(jnp.float32),
 }
 
@@ -251,7 +251,7 @@ optimizer = prepare_optimizer(opt_params_per_leaf)
 diff_params = {
     "sample": jnp.ones_like(true_sample),
     "probe_modes": jnp.asarray(modes.copy()),
-    "modal_weights": jnp.ones((1, 1)),
+    "modal_weights": jnp.ones((n_pos,1, 1)),
     "scan_mistakes": jnp.zeros((n_pos, 2)).astype(jnp.float32),
 }
 
@@ -452,10 +452,10 @@ plt.imshow(jnp.abs(params_host["sample"]), cmap="gray")
 # %%
 
 opt_params_per_leaf = {
-    "sample": {"type": "adam", "learning_rate": 1e0},
-    "probe_modes": {"type": "adam", "learning_rate": 1e0},
-    "modal_weights": {"type": "adam", "learning_rate": 0},
-    "scan_mistakes": {"type": "adam", "learning_rate": 1e-2},
+    "sample": {"type": "adam", "learning_rate": 1e0},#1e0
+    "probe_modes": {"type": "adam", "learning_rate": 1e0},#1e0
+    "modal_weights": {"type": "adam", "learning_rate": 1e-1},#1e-3
+    "scan_mistakes": {"type": "adam", "learning_rate": 1e-2},#1e-2
 }
 
 
@@ -465,13 +465,14 @@ opt_params_per_leaf = {
 optimizer = prepare_optimizer(opt_params_per_leaf)
 
 
+from loss_and_reg import combine_regularizers
 from optim_loop import run_optimization_loop
 
 params = diff_params
 params['scan_mistakes'] = (jnp.zeros((n_pos, 2)) + np.random.randn(n_pos, 2)*0.3).astype(jnp.float32)
 r_noise = (np.random.randn(*modes.shape)*80).astype(jnp.float32)
 params['probe_modes'] = jnp.asarray(modes.copy()) + (r_noise - r_noise.mean())
-
+params['modal_weights'] = jnp.ones((n_pos,modes.shape[0],modes.shape[0]))+np.random.rand(*(n_pos,modes.shape[0],modes.shape[0]))
 
 non_diff_params = {
     "sample_positions":  jnp.asarray(true_scan_positions + np.random.randint(-2, 2, true_scan_positions.shape), dtype=jnp.int32),
@@ -534,8 +535,44 @@ projector = pj.merge_multiple_projections([ proj_shift_rounder,])
 ###
 
 
-plt.imshow(jnp.abs(params["sample"]), cmap="gray")
+# show abs and angle of the sample
+plt.subplot(1, 2, 1)
+plt.imshow(jnp.abs(params["sample"])[30:100,40:110], cmap="turbo")#[30:100,40:110]
+plt.colorbar()
+plt.axis("off")
+plt.subplot(1, 2, 2)
+plt.imshow(jnp.angle(params["sample"]), cmap="turbo")
+#switch off axis 
+plt.axis("off")
+plt.tight_layout()
 plt.show()
+plt.figure()
+if params["probe_modes"].ndim <3:
+    plt.figure()
+    # show abs and angle of the sample
+    plt.subplot(1, 2, 1)
+    plt.imshow(jnp.abs(params["probe_modes"]), cmap="turbo")#[30:100,40:110]
+    plt.axis("off")
+    plt.subplot(1, 2, 2)
+    plt.imshow(jnp.angle(params["probe_modes"]), cmap="turbo")
+    #switch off axis 
+    plt.axis("off")
+    plt.tight_layout()
+    plt.show()
+else:
+    n_modes = params["probe_modes"].shape[0]
+    plt.figure(figsize=(12, 4))
+    for i in range(n_modes):
+        plt.subplot(2, n_modes, i + 1)
+        plt.imshow(jnp.abs(params["probe_modes"][i]), cmap="viridis")
+        plt.axis("off")
+        plt.title(f"Mode {i+1} Abs")
+        plt.subplot(2, n_modes, n_modes + i + 1)
+        plt.imshow(jnp.angle(params["probe_modes"][i]), cmap="twilight")
+        plt.axis("off")
+        plt.title(f"Mode {i+1} Angle")
+    plt.tight_layout()
+    plt.show()
 #%%
 # Mode 1: one update per full pass (gradient accumulation)
 params, opt_state, loss_hist = run_optimization_loop(
@@ -596,6 +633,8 @@ else:
         plt.title(f"Mode {i+1} Angle")
     plt.tight_layout()
     plt.show()
+
+print(params['modal_weights'][0])
 #%%
 # Mode 2: update every batch, no repeats within each epoch
 params, opt_state, loss_hist = run_optimization_loop(
