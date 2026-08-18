@@ -503,7 +503,7 @@ reg_s_tv = combine_regularizers([reg_s_tv, reg_p_tv])
 reg_loss = join_loss_and_reg(get_loss_v, reg_s_tv)
 get_loss_and_grad_v = jax.jit(jax.value_and_grad(reg_loss, argnums=0))
 non_diff_params['tv_sample_weight'] = 0
-non_diff_params['tv_probe_modes_weight'] = 0
+non_diff_params['tv_probe_modes_weight'] = 1e-3
 ###
 
 
@@ -617,7 +617,7 @@ if params["probe_modes"].ndim <3:
     plt.imshow(jnp.angle(params["probe_modes"]), cmap="turbo")
     #switch off axis 
     plt.axis("off")
-    plt.tight_layout()
+    
     plt.show()
 else:
     n_modes = params["probe_modes"].shape[0]
@@ -647,7 +647,7 @@ params, opt_state, loss_hist = run_optimization_loop(
     mask=mask,
     mode="sequential_no_repeats",
     n_steps=250,      # epochs
-    batch_size=50,
+    batch_size=4,
     seed=0,
     shuffle_each_epoch=True,
     use_multigpu = False
