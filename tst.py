@@ -92,7 +92,7 @@ true_scan_positions = np.random.randint(0, obj_size - (5 + probe_size), size=(n_
 true_diff_params = {
     "sample": true_sample,
     "probe_modes": modes,#true_probe,
-    "modal_weights": jnp.ones((n_pos,modes.shape[0], modes.shape[0])),
+    "modal_weights": jnp.array((np.random.rand(n_pos,3)[:,:,None]*np.eye(3)).astype(np.complex64)),#jnp.ones((n_pos,modes.shape[0], modes.shape[0])),
     "scan_mistakes": jnp.zeros((n_pos, 2)).astype(jnp.float32),
 }
 
@@ -472,8 +472,8 @@ params = diff_params
 params['scan_mistakes'] = (jnp.zeros((n_pos, 2)) + np.random.randn(n_pos, 2)*0.3).astype(jnp.float32)
 r_noise = (np.random.randn(*modes.shape)*80).astype(jnp.float32)
 params['probe_modes'] = jnp.asarray(modes.copy()) + (r_noise - r_noise.mean())
-params['modal_weights'] = jnp.ones((n_pos,modes.shape[0],modes.shape[0]))+np.random.rand(*(n_pos,modes.shape[0],modes.shape[0]))
-
+params['modal_weights'] = jnp.ones((n_pos,modes.shape[0],modes.shape[0]))+np.random.rand(*(n_pos,modes.shape[0],modes.shape[0]))+0j
+params['modal_weights'] = jnp.array((np.random.rand(n_pos,3)[:,:,None]*np.eye(3)).astype(np.complex64))
 non_diff_params = {
     "sample_positions":  jnp.asarray(true_scan_positions + np.random.randint(-2, 2, true_scan_positions.shape), dtype=jnp.int32),
 }
@@ -647,7 +647,7 @@ params, opt_state, loss_hist = run_optimization_loop(
     mask=mask,
     mode="sequential_no_repeats",
     n_steps=250,      # epochs
-    batch_size=30,
+    batch_size=50,
     seed=0,
     shuffle_each_epoch=True,
     use_multigpu = False
