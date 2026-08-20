@@ -40,7 +40,7 @@ def conj_grads() -> optax.GradientTransformation:
 obj_size = 128
 probe_size = 64
 scan_type = "random"
-n_pos = 100
+n_pos = 10000
 
 
 # Load a built-in sample image
@@ -92,7 +92,7 @@ true_scan_positions = np.random.randint(0, obj_size - (5 + probe_size), size=(n_
 true_diff_params = {
     "sample": true_sample,
     "probe_modes": modes,#true_probe,
-    "modal_weights": jnp.array((np.random.rand(n_pos,3)[:,:,None]*np.eye(3)).astype(np.complex64)),#jnp.ones((n_pos,modes.shape[0], modes.shape[0])),
+    "modal_weights": jnp.array((np.random.rand(n_pos,3,3)).astype(np.complex64)),#jnp.array((np.random.rand(n_pos,3)[:,:,None]*np.eye(3)).astype(np.complex64)),#jnp.ones((n_pos,modes.shape[0], modes.shape[0])),
     "scan_mistakes": jnp.zeros((n_pos, 2)).astype(jnp.float32),
 }
 
@@ -138,7 +138,18 @@ point_model = models["point_model"]
 I = point_model(true_diff_params, true_non_diff_params, 0)
 # %%
 batched_model = jax.jit(jax.vmap(point_model, in_axes=(None, None, 0)))
-I_batched = batched_model(true_diff_params, true_non_diff_params, jnp.arange(50).astype(jnp.int32))
+
+batch_size_for_generation = 1000
+def batched(data,batch_size):
+    n = data.shape[0]
+    for i in range(0, n, batch_size):
+        yield data[i:i + batch_size]
+
+I_batched = []
+for batch in batched(jnp.arange(n_pos).astype(jnp.int32), batch_size_for_generation):
+    I_batched.append(batched_model(true_diff_params, true_non_diff_params, batch))
+
+I_batched = jnp.concatenate(I_batched, axis=0)
 
 
 measured_intensity = I_batched 
@@ -178,7 +189,7 @@ get_loss_v = jax.jit(join_loss_and_forward_batched(gauss_loss, point_model))
 get_loss(true_diff_params,true_non_diff_params,0,jnp.sqrt(I_batched[0]), mask)
 
 
-get_loss_v(true_diff_params,true_non_diff_params,jnp.arange(50).astype(jnp.int32),jnp.sqrt(I_batched[:50]), mask)
+get_loss_v(true_diff_params,true_non_diff_params,jnp.arange(n_pos).astype(jnp.int32),jnp.sqrt(I_batched[:n_pos]), mask)
 get_loss_and_grad = jax.jit(jax.value_and_grad(get_loss, argnums=0))
 get_loss_and_grad_v = jax.jit(jax.value_and_grad(get_loss_v, argnums=0))
 # %%
@@ -264,8 +275,8 @@ non_diff_params = {
 opt_state = optimizer.init(diff_params)
 params = diff_params
 
-batch_idx = jnp.arange(50).astype(jnp.int32)
-batch_measured = jnp.sqrt(I_batched[:50])
+batch_idx = jnp.arange(n_pos).astype(jnp.int32)
+batch_measured = jnp.sqrt(I_batched[:n_pos])
 
 for step in range(50):
     loss, grads = get_loss_and_grad_v(
@@ -347,8 +358,8 @@ params = diff_params
 
 opt_step = prepare_opt_step(optimizer, get_loss_and_grad_v)
 
-batch_idx = jnp.arange(50).astype(jnp.int32)
-batch_measured = jnp.sqrt(I_batched[:50])
+batch_idx = jnp.arange(n_pos).astype(jnp.int32)
+batch_measured = jnp.sqrt(I_batched[:n_pos])
 n_iter = 50
 
 loss = []
@@ -412,8 +423,8 @@ opt_state = jax.device_put(optimizer.init(diff_params), rep)
 non_diff_params_sh = jax.device_put(non_diff_params, rep)
 mask_sh = jax.device_put(mask, rep)
 
-batch_idx = jnp.arange(50).astype(jnp.int32)
-batch_measured = jnp.sqrt(I_batched[:50])
+batch_idx = jnp.arange(n_pos).astype(jnp.int32)
+batch_measured = jnp.sqrt(I_batched[:n_pos])
 
 batch_idx = jax.device_put(batch_idx_host, idx_shard)
 batch_measured = jax.device_put(batch_measured_host, meas_shard)
@@ -473,7 +484,7 @@ params['scan_mistakes'] = (jnp.zeros((n_pos, 2)) + np.random.randn(n_pos, 2)*0.3
 r_noise = (np.random.randn(*modes.shape)*80).astype(jnp.float32)
 params['probe_modes'] = jnp.asarray(modes.copy()) + (r_noise - r_noise.mean())
 params['modal_weights'] = jnp.ones((n_pos,modes.shape[0],modes.shape[0]))+np.random.rand(*(n_pos,modes.shape[0],modes.shape[0]))+0j
-params['modal_weights'] = jnp.array((np.random.rand(n_pos,3)[:,:,None]*np.eye(3)).astype(np.complex64))
+params['modal_weights'] = jnp.array((np.random.rand(n_pos,3,3)).astype(np.complex64)) #jnp.array((np.random.rand(n_pos,3)[:,:,None]*np.eye(3)).astype(np.complex64))
 non_diff_params = {
     "sample_positions":  jnp.asarray(true_scan_positions + np.random.randint(-2, 2, true_scan_positions.shape), dtype=jnp.int32),
 }
@@ -481,7 +492,7 @@ non_diff_params = {
 
 opt_state = optimizer.init(params)
 
-measured_pool = jnp.sqrt(I_batched[:50])  # shape [n_positions, H, W]
+measured_pool = jnp.sqrt(I_batched[:n_pos])  # shape [n_positions, H, W]
 
 
 get_loss_and_grad_v = jax.jit(jax.value_and_grad(get_loss_v, argnums=0))
@@ -492,7 +503,7 @@ from loss_and_reg import create_regularizer, create_tv_reg, join_loss_and_reg
 reg_s_tv = create_regularizer(
                                diff_params_name='sample',
                                  reg_weight_name='tv_sample_weight',
-                                 reg_func = create_tv_reg(p=2,q= 2,conv_func = jnp.angle))
+                                 reg_func = create_tv_reg(p=2,q= 2,conv_func = jnp.abs))
 
 reg_p_tv = create_regularizer(
                                diff_params_name='probe_modes',
@@ -502,7 +513,7 @@ reg_p_tv = create_regularizer(
 reg_s_tv = combine_regularizers([reg_s_tv, reg_p_tv])
 reg_loss = join_loss_and_reg(get_loss_v, reg_s_tv)
 get_loss_and_grad_v = jax.jit(jax.value_and_grad(reg_loss, argnums=0))
-non_diff_params['tv_sample_weight'] = 0
+non_diff_params['tv_sample_weight'] = 1e-3
 non_diff_params['tv_probe_modes_weight'] = 1e-3
 ###
 
@@ -581,11 +592,11 @@ params, opt_state, loss_hist = run_optimization_loop(
     optimizer=optimizer,
     loss_and_grad_fn=get_loss_and_grad_v,
     non_diff_params=non_diff_params,
-    measured_batch_pool=batch_measured,
+    measured_batch_pool=batch_measured[:n_pos],
     mask=mask,
     mode="accumulate_full_pass",
     n_steps=500,      # epochs
-    batch_size=50,    # memory-fit batch
+    batch_size=1000,    # memory-fit batch
     seed=0,
     shuffle_each_epoch=True,
     projection_fn = projector,
@@ -646,8 +657,8 @@ params, opt_state, loss_hist = run_optimization_loop(
     measured_batch_pool=measured_pool,
     mask=mask,
     mode="sequential_no_repeats",
-    n_steps=250,      # epochs
-    batch_size=4,
+    n_steps=25,      # epochs
+    batch_size=50,
     seed=0,
     shuffle_each_epoch=True,
     use_multigpu = False
