@@ -1,0 +1,24 @@
+[project]
+name = "ptycho-jax"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Kharitok", email = "konsthr@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "h5py>=3.16.0",
+    "ipykernel>=7.3.0",
+    "jax[cuda12]>=0.11.1",
+    "matplotlib>=3.11.1",
+    "numpy>=2.5.3",
+    "scipy>=1.18.1",
+]
+
+[project.scripts]
+ptycho-jax = "ptycho_jax:main"
+
+[build-system]
+requires = ["uv_build>=0.12.9,<0.13.0"]
+build-backend = "uv_build"

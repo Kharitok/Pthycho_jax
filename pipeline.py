@@ -429,7 +429,9 @@ plt.imshow(
 plt.colorbar()
 # plt.axis("off")
 plt.subplot(1, 2, 2)
-plt.imshow(jnp.angle(differentiable_parameters["sample"])[400:800, 400:800], cmap="turbo")
+plt.imshow(
+    jnp.angle(differentiable_parameters["sample"])[400:800, 400:800], cmap="turbo"
+)
 # switch off axis
 # plt.axis("off")
 plt.tight_layout()
