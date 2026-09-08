@@ -45,6 +45,7 @@ reconstruction_config = {
     "propogation_function": "fft",
     "assumed_defocus_at_sample_m": -15.9e-3,
     "relative_threshold_for_probe_estimation": 5e-3,
+    "probe_modes_num": 1,
 }
 
 
@@ -56,6 +57,18 @@ loaded_data = load_dataset(dataloader_config)
 loaded_parameters = load_exp_params_from_attributes(
     dataloader_config["file_path"], experimental_parameters
 )
+
+get_non_neggative_non_nans = lambda x: np.maximum(np.nan_to_num(x), 0)
+
+loaded_data["measured_intensities"] = get_non_neggative_non_nans(
+    loaded_data["measured_intensities"]
+)
+loaded_data["mean_image"] = get_non_neggative_non_nans(loaded_data["mean_image"])
+# TODO patch loading
+loaded_data["precise_mask"] = (
+    loaded_data["precise_mask"].T if loaded_data["precise_mask"] is not None else None
+)
+
 
 # %% process scan coordinates
 # convert to pixes, center, split into int and float parts
@@ -110,6 +123,14 @@ plt.scatter(int_parts[:, 0], int_parts[:, 1])
 plt.title("Integer parts of scan coordinates in pixels")
 plt.show()
 
+### Get assumption of the sample size in pixels
+
+min_required_sample_size_pix = (
+    (np.max(int_parts, axis=0) - np.min(int_parts, axis=0))
+    + 1
+    + np.array(loaded_data["mean_probe"].shape)
+)
+sample_size_pix = (min_required_sample_size_pix * 1.2).astype(int)
 ### get beam estimation from distance and defocus
 # %%
 
@@ -159,6 +180,107 @@ plt.figure()
 plt.imshow(np.abs(probe), norm="asinh")
 plt.title("Initial probe modulus at sample plane")
 plt.show()
-### build modes and modal weights
 
-# %%
+
+# %%### build modes and modal weights
+n_modes = 2  # reconstruction_config["probe_modes_num"]
+
+modes_wavefields = np.array([probe for _ in range(n_modes)])
+modes_wavefields += 1e-2 * np.random.randn(*modes_wavefields.shape)
+plt.imshow(np.abs(modes_wavefields[0]))
+plt.title("Initial mode wavefield (first mode)")
+plt.show()
+
+
+# normalize the modes to match the mean measured intensity
+modes_energy = (np.abs(modes_wavefields) ** 2).sum(axis=(-1, -2))
+
+mean_measured_intensity = loaded_data["total_ints"].mean()
+
+scaling_factor = mean_measured_intensity / modes_energy.sum()
+modes_wavefields *= np.sqrt(scaling_factor)
+
+# normalize modal weights to match exact intensity
+
+modal_weights = np.diag(np.ones(n_modes))
+modal_weights = np.array(
+    [modal_weights for _ in range(loaded_data["total_ints"].shape[0])]
+)
+modal_weights_scaling = loaded_data["total_ints"] / mean_measured_intensity
+modal_weights *= modal_weights_scaling[:, None, None]
+
+
+# %% Probe mask, freq_mask, detector mask
+
+# TODO add mask constructions based on configs
+real_mask = np.ones_like(probe_intensity, dtype=bool)
+freq_mask = probe_intensity > np.nanmax(probe_intensity) * 1e-3
+detector_mask = (
+    loaded_data["mask"] * loaded_data["precise_mask"]
+    if loaded_data["precise_mask"] is not None
+    else loaded_data["mask"]
+)
+# %% ifftshift all for reconstruction
+loaded_data["measured_intensities"] = np.fft.ifftshift(
+    loaded_data["measured_intensities"], axes=(-2, -1)
+)
+loaded_data["mean_image"] = np.fft.ifftshift(loaded_data["mean_image"])
+detector_mask = np.fft.ifftshift(detector_mask)
+freq_mask = np.fft.ifftshift(freq_mask)
+
+# %% Show all befor the reconstruction
+# probe
+plt.figure()
+for i in range(n_modes):
+    # top amlitude bottom phase
+    for j in range(2):
+        plt.subplot(2, n_modes, j * n_modes + i + 1)
+        if j == 0:
+            plt.imshow(np.abs(modes_wavefields[i]), cmap="turbo", norm="asinh")
+            plt.title(f"Mode {i + 1} amplitude")
+            plt.colorbar()
+        else:
+            plt.imshow(np.angle(modes_wavefields[i]), cmap="twilight")
+            plt.title(f"Mode {i + 1} phase")
+plt.suptitle("Probe modes")
+plt.tight_layout()
+plt.show()
+
+# probe at detector
+modes_wavefields_detector = np.fft.fft2(modes_wavefields, axes=(-2, -1))
+
+plt.figure()
+for i in range(n_modes):
+    # top amlitude bottom phase
+    plt.subplot(1, n_modes, i + 1)
+    plt.imshow(np.abs(modes_wavefields_detector[i]), cmap="turbo", norm="asinh")
+    plt.title(f"Detector {i + 1} amplitude")
+    plt.colorbar()
+plt.suptitle("Probe modes at detector")
+plt.tight_layout()
+plt.show()
+
+# masks and measured data
+plt.figure(figsize=(10, 40))
+plt.subplot(1, 5, 1)
+plt.imshow(real_mask, cmap="gray")
+plt.title("Real mask")
+plt.subplot(1, 5, 2)
+plt.imshow(freq_mask, cmap="gray")
+plt.title("Frequency mask")
+plt.subplot(1, 5, 3)
+plt.imshow(detector_mask, cmap="gray")
+plt.title("Detector mask")
+plt.subplot(1, 5, 4)
+plt.imshow(loaded_data["mean_image"], cmap="turbo", norm="asinh")
+plt.title("Measured intensity")
+plt.subplot(1, 5, 5)
+plt.imshow(loaded_data["measured_intensities"][0], cmap="turbo", norm="asinh")
+plt.title("First measured")
+
+plt.tight_layout()
+plt.show()
+
+
+# %% Here we should have all data loaded and prepared
+# Now it's time for the model constructions
