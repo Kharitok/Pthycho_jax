@@ -250,7 +250,7 @@ def run_optimization_loop(
     shuffle_each_epoch: bool = True,
     use_multigpu: bool = False,
     projection_fn: Callable | None = None,
-) -> tuple[PyTree, optax.OptState, jnp.ndarray]:
+) -> tuple[PyTree, PyTree, optax.OptState, jnp.ndarray]:
     """
     Runs optimization with configurable gradient/update modes.
 
@@ -305,6 +305,8 @@ def run_optimization_loop(
     -------
     params:
         Updated parameter pytree.
+    non_diff_params:
+        Updated non-optimizable parameter dict.
     opt_state:
         Updated optimizer state.
     loss_history:
@@ -441,6 +443,7 @@ def run_optimization_loop(
 
         return (
             _collect_to_host(params),
+            _collect_to_host(non_diff_params),
             _collect_to_host(opt_state),
             jnp.asarray(
                 loss_values,
@@ -595,4 +598,9 @@ def run_optimization_loop(
             "'accumulate_full_pass', 'sequential_no_repeats', 'random_with_replacement'."
         )
 
-    return params, opt_state, jnp.asarray(loss_values, dtype=jnp.float32)
+    return (
+        params,
+        non_diff_params,
+        opt_state,
+        jnp.asarray(loss_values, dtype=jnp.float32),
+    )

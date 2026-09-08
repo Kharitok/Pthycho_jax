@@ -1,5 +1,11 @@
 # %% reconstruction pipeline for ptychography
+
+import os
+
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.8"
 import h5py
+import jax
+import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -9,7 +15,7 @@ from dataloader import (
     load_exp_params_from_attributes,
     process_scan_coordinates,
 )
-from probe_initialization import init_probe_simple_fft
+from probe_initialization import get_thresholded_intensity, init_probe_simple_fft
 
 # %%
 
@@ -46,6 +52,9 @@ reconstruction_config = {
     "assumed_defocus_at_sample_m": -15.9e-3,
     "relative_threshold_for_probe_estimation": 5e-3,
     "probe_modes_num": 1,
+    "bin_factor": (1, 1),
+    "shift_margin": 10,
+    "max_correction_magnitude": 5,
 }
 
 
@@ -85,35 +94,6 @@ reconstruction_pix_size = resolution[0]
 print(f"Reconstruction resolution: {reconstruction_pix_size/1e-9:.1f} nm")
 
 
-# def process_scan_coordinates(
-#     scan_coords: np.ndarray,
-#     reconstruction_pix_size: float,
-#     scan_coords_unit: float = 1e-3,
-# ) -> tuple[np.ndarray, np.ndarray]:
-#     """
-#     Processes the scan coordinates by converting them to pixels, centering them, and splitting into integer and float parts.
-
-#     Args:
-#         scan_coords (np.ndarray): The scan coordinates in the unit specified by `scan_coords_unit`.
-#         reconstruction_pix_size (float): The pixel size for reconstruction in meters.
-#         scan_coords_unit (float): The unit of the scan coordinates (default is 1e-3 for millimeters).
-
-#     Returns:
-#         tuple: A tuple containing the integer and float parts of the processed scan coordinates.
-#     """
-#     # Convert to pixels
-#     scan_coords_pix = scan_coords * scan_coords_unit / reconstruction_pix_size
-
-#     # Center the coordinates
-#     scan_coords_centered = scan_coords_pix - np.mean(scan_coords_pix, axis=0)
-
-#     # Split into integer and float parts
-#     int_parts = np.floor(scan_coords_centered).astype(int)
-#     float_parts = scan_coords_centered - int_parts
-
-#     return int_parts, float_parts
-
-
 int_parts, float_parts = process_scan_coordinates(
     loaded_data["scan_coords"], reconstruction_pix_size
 )
@@ -135,31 +115,31 @@ sample_size_pix = (min_required_sample_size_pix * 1.2).astype(int)
 # %%
 
 
-def get_thresholded_intensity(
-    I_det: np.ndarray, relative_threshold: float = 1e-2
-) -> np.ndarray:
-    """
-    Computes the thresholded intensity of the probe from the measured intensity at the detector.
+# def get_thresholded_intensity(
+#     I_det: np.ndarray, relative_threshold: float = 1e-2
+# ) -> np.ndarray:
+#     """
+#     Computes the thresholded intensity of the probe from the measured intensity at the detector.
 
-    Parameters:
-    -----------
-    I_det : 2D array -> Measured empty beam intensity at detector
-    relative_threshold : float -> Relative threshold for probe estimation
+#     Parameters:
+#     -----------
+#     I_det : 2D array -> Measured empty beam intensity at detector
+#     relative_threshold : float -> Relative threshold for probe estimation
 
-    Returns:
-    --------
-    detector_probe_modulus : 2D array -> Thresholded modulus of the probe at the detector
-    """
-    # Ensure non-negative intensities
-    I_det = np.maximum(np.nan_to_num(I_det, nan=0.0), 0)
+#     Returns:
+#     --------
+#     detector_probe_modulus : 2D array -> Thresholded modulus of the probe at the detector
+#     """
+#     # Ensure non-negative intensities
+#     I_det = np.maximum(np.nan_to_num(I_det, nan=0.0), 0)
 
-    # Create a support mask based on the relative threshold
-    detector_probe_support = I_det > np.max(I_det) * relative_threshold
+#     # Create a support mask based on the relative threshold
+#     detector_probe_support = I_det > np.max(I_det) * relative_threshold
 
-    # Compute the modulus of the probe
-    detector_probe_modulus = I_det * detector_probe_support
+#     # Compute the modulus of the probe
+#     detector_probe_modulus = I_det * detector_probe_support
 
-    return detector_probe_modulus
+#     return detector_probe_modulus
 
 
 probe_intensity = get_thresholded_intensity(
@@ -171,7 +151,7 @@ probe = init_probe_simple_fft(
     probe_intensity,
     loaded_parameters["detector_pixel_size_m"],
     loaded_parameters["sample_detector_distance_m"],
-    reconstruction_config["assumed_defocus_at_sample_m"],
+    -reconstruction_config["assumed_defocus_at_sample_m"],
     loaded_parameters["wavelength_m"],
 )[0]
 
@@ -227,7 +207,7 @@ loaded_data["measured_intensities"] = np.fft.ifftshift(
 loaded_data["mean_image"] = np.fft.ifftshift(loaded_data["mean_image"])
 detector_mask = np.fft.ifftshift(detector_mask)
 freq_mask = np.fft.ifftshift(freq_mask)
-
+print("Loaded data and masks have been ifftshifted.")
 # %% Show all befor the reconstruction
 # probe
 plt.figure()
@@ -281,6 +261,209 @@ plt.title("First measured")
 plt.tight_layout()
 plt.show()
 
+# %%
+reconstruction_config = {
+    "scan_motors_unit": 1e-3,
+    "propogation_function": "fft",
+    "assumed_defocus_at_sample_m": -15.9e-3,
+    "relative_threshold_for_probe_estimation": 5e-3,
+    "probe_modes_num": 1,
+    "bin_factor": (1, 1),
+    "shift_margin": 10,
+    "max_correction_magnitude": 5,
+}
+reconstruction_config["probe_size"] = loaded_data["mean_image"].shape
+
+from loss_and_reg import (
+    combine_regularizers,
+    create_regularizer,
+    create_tv_reg,
+    gauss_loss,
+    join_loss_and_forward,
+    join_loss_and_forward_batched,
+    join_loss_and_reg,
+)
+from optim_loop import run_optimization_loop
+from optimizers import prepare_optimizer
 
 # %% Here we should have all data loaded and prepared
 # Now it's time for the model constructions
+from transmission_ptycho_models import construct_point_model_ptycho_transmission
+
+# %% construct model
+
+
+model_parameters = {
+    "probe_type": "fluctuating",
+    "sample_type": "complex",
+    "binning_factor": (1, 1),
+    "shift_margin": reconstruction_config["shift_margin"],
+    "sample_selector_type": "correcting",
+    "propagator_type": "Fourrier",
+    "probe_shape": reconstruction_config["probe_size"],
+    "max_correction_magnitude": 10,
+}
+
+models = construct_point_model_ptycho_transmission(model_parameters)
+
+
+# %% construct optimizable and fixed parameters
+
+n_pos = 2500
+# TODO here float point for shifts should be different and recaclulated from shifts
+differentiable_parameters = {
+    "sample": jnp.ones(sample_size_pix).astype(jnp.complex64),
+    "probe_modes": jnp.array(modes_wavefields.copy()).astype(jnp.complex64),
+    "modal_weights": jnp.array(modal_weights.copy()).astype(jnp.complex64),
+    "scan_mistakes": jnp.array(np.zeros_like(float_parts)).astype(jnp.float32),
+}
+non_differentiable_parameters = {
+    "sample_positions": jnp.array(int_parts - np.min(int_parts, axis=0) + 50).astype(
+        jnp.int32
+    ),
+}
+
+
+batch_measured = jnp.sqrt(loaded_data["measured_intensities"][:n_pos])
+
+# %% construct loss projectors and optimizers
+
+# loss
+
+get_loss_v = jax.jit(join_loss_and_forward_batched(gauss_loss, models["point_model"]))
+get_loss_and_grad_v = jax.jit(jax.value_and_grad(get_loss_v, argnums=0))
+
+# %%optimizer
+opt_params_per_leaf = {
+    "sample": {"type": "adam", "learning_rate": 1e0},  # 1e0
+    "probe_modes": {"type": "adam", "learning_rate": 1e0},  # 1e0
+    "modal_weights": {"type": "adam", "learning_rate": 1e-1},  # 1e-3
+    "scan_mistakes": {"type": "adam", "learning_rate": 1e-2},  # 1e-2
+}
+
+optimizer = prepare_optimizer(opt_params_per_leaf)
+opt_state = optimizer.init(differentiable_parameters)
+
+# %% show before
+
+plt.subplot(1, 2, 1)
+plt.imshow(
+    jnp.abs(differentiable_parameters["sample"]), cmap="turbo"
+)  # [30:100,40:110]
+plt.colorbar()
+# plt.axis("off")
+plt.subplot(1, 2, 2)
+plt.imshow(jnp.angle(differentiable_parameters["sample"]), cmap="turbo")
+# switch off axis
+# plt.axis("off")
+plt.tight_layout()
+plt.show()
+plt.figure()
+if differentiable_parameters["probe_modes"].ndim < 3:
+    plt.figure()
+    # show abs and angle of the sample
+    plt.subplot(1, 2, 1)
+    plt.imshow(
+        jnp.abs(differentiable_parameters["probe_modes"]), cmap="turbo"
+    )  # [30:100,40:110]
+    plt.axis("off")
+    plt.subplot(1, 2, 2)
+    plt.imshow(jnp.angle(differentiable_parameters["probe_modes"]), cmap="turbo")
+    # switch off axis
+    plt.axis("off")
+    plt.tight_layout()
+    plt.show()
+else:
+    n_modes = differentiable_parameters["probe_modes"].shape[0]
+    plt.figure(figsize=(12, 4))
+    for i in range(n_modes):
+        plt.subplot(2, n_modes, i + 1)
+        plt.imshow(jnp.abs(differentiable_parameters["probe_modes"][i]), cmap="viridis")
+        plt.axis("off")
+        plt.title(f"Mode {i+1} Abs")
+        plt.subplot(2, n_modes, n_modes + i + 1)
+        plt.imshow(
+            jnp.angle(differentiable_parameters["probe_modes"][i]), cmap="twilight"
+        )
+        plt.axis("off")
+        plt.title(f"Mode {i+1} Angle")
+    plt.tight_layout()
+    plt.show()
+
+
+# %% Start recon loop
+# n_pos = 200
+
+differentiable_parameters, non_differentiable_parameters, opt_state, loss_hist = (
+    run_optimization_loop(
+        params=differentiable_parameters,
+        non_diff_params=non_differentiable_parameters,
+        opt_state=opt_state,
+        optimizer=optimizer,
+        loss_and_grad_fn=get_loss_and_grad_v,
+        measured_batch_pool=batch_measured[:n_pos],
+        mask=jnp.array(detector_mask).astype(bool),
+        mode="accumulate_full_pass",
+        n_steps=50,  # epochs
+        batch_size=250,  # memory-fit batch
+        seed=0,
+        shuffle_each_epoch=True,
+        projection_fn=lambda x, y: (x, y),
+        use_multigpu=True,
+    )
+)
+
+plt.figure()
+plt.plot(loss_hist)
+plt.xlabel("Iteration")
+plt.ylabel("Loss")
+plt.title("Optimization Loss History")
+plt.show()
+
+# %% show after
+
+plt.subplot(1, 2, 1)
+plt.imshow(
+    jnp.abs(differentiable_parameters["sample"])[400:800, 400:800], cmap="turbo"
+)  # [30:100,40:110]
+plt.colorbar()
+# plt.axis("off")
+plt.subplot(1, 2, 2)
+plt.imshow(jnp.angle(differentiable_parameters["sample"])[400:800, 400:800], cmap="turbo")
+# switch off axis
+# plt.axis("off")
+plt.tight_layout()
+plt.show()
+plt.figure()
+if differentiable_parameters["probe_modes"].ndim < 3:
+    plt.figure()
+    # show abs and angle of the sample
+    plt.subplot(1, 2, 1)
+    plt.imshow(
+        jnp.abs(differentiable_parameters["probe_modes"]), cmap="turbo"
+    )  # [30:100,40:110]
+    plt.axis("off")
+    plt.subplot(1, 2, 2)
+    plt.imshow(jnp.angle(differentiable_parameters["probe_modes"]), cmap="turbo")
+    # switch off axis
+    plt.axis("off")
+    plt.tight_layout()
+    plt.show()
+else:
+    n_modes = differentiable_parameters["probe_modes"].shape[0]
+    plt.figure(figsize=(12, 4))
+    for i in range(n_modes):
+        plt.subplot(2, n_modes, i + 1)
+        plt.imshow(jnp.abs(differentiable_parameters["probe_modes"][i]), cmap="viridis")
+        plt.axis("off")
+        plt.title(f"Mode {i+1} Abs")
+        plt.subplot(2, n_modes, n_modes + i + 1)
+        plt.imshow(
+            jnp.angle(differentiable_parameters["probe_modes"][i]), cmap="twilight"
+        )
+        plt.axis("off")
+        plt.title(f"Mode {i+1} Angle")
+    plt.tight_layout()
+    plt.show()
+
+# %%

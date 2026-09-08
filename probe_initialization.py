@@ -47,3 +47,30 @@ def init_probe_simple_fft(
     p_sample = (wavelength * z_sd) / (Nx * p_det)
 
     return P_sample, p_sample
+
+
+def get_thresholded_intensity(
+    I_det: np.ndarray, relative_threshold: float = 1e-2
+) -> np.ndarray:
+    """
+    Computes the thresholded intensity of the probe from the measured intensity at the detector.
+
+    Parameters:
+    -----------
+    I_det : 2D array -> Measured empty beam intensity at detector
+    relative_threshold : float -> Relative threshold for probe estimation
+
+    Returns:
+    --------
+    detector_probe_modulus : 2D array -> Thresholded modulus of the probe at the detector
+    """
+    # Ensure non-negative intensities
+    I_det = np.maximum(np.nan_to_num(I_det, nan=0.0), 0)
+
+    # Create a support mask based on the relative threshold
+    detector_probe_support = I_det > np.max(I_det) * relative_threshold
+
+    # Compute the modulus of the probe
+    detector_probe_modulus = I_det * detector_probe_support
+
+    return detector_probe_modulus

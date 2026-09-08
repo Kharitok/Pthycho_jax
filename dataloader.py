@@ -322,10 +322,12 @@ def load_dataset(loader_config: dict) -> dict[str, np.ndarray]:
     # load mask
     mask = get_images(loader_config["file_path"], loader_config["mask_path"])
     if "precise_mask_path" in loader_config:
+        print("Load precise detector mask")
         precise_mask = get_images(
             loader_config["file_path"], loader_config["precise_mask_path"]
         )
-        mask = mask * precise_mask  # Combine masks if precise mask is provided
+    else:
+        precise_mask = None
 
     print(f"Loaded mask with shape: {mask.shape}")
     # load average image and probe if specified in the config
@@ -365,6 +367,7 @@ def load_dataset(loader_config: dict) -> dict[str, np.ndarray]:
         "mean_image": mean_image,
         "mean_probe": mean_probe,
         "mask": mask,
+        "precise_mask": precise_mask,
     }
 
 
