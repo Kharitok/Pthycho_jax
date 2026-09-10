@@ -16,6 +16,7 @@ PyTree = Any
 
 TrainMode = Literal[
     "accumulate_full_pass",
+    "accumulate_full_pass_streaming",
     "sequential_no_repeats",
     "random_with_replacement",
 ]
@@ -67,6 +68,30 @@ def prepare_opt_step(
         return params, opt_state, non_diff_params, loss
 
     return opt_step
+
+
+def prepare_accumulate_batch(
+    loss_and_grad_fn: Callable,
+) -> Callable:
+    """Prepares a step that computes one batch's loss and gradients only."""
+
+    @jax.jit
+    def accumulate_batch(
+        params: PyTree,
+        non_diff_params: dict[str, Any],
+        batch_idx: jnp.ndarray,
+        batch_measured: jnp.ndarray,
+        mask: jnp.ndarray,
+    ) -> tuple[jnp.ndarray, PyTree]:
+        return loss_and_grad_fn(
+            params,
+            non_diff_params,
+            batch_idx,
+            batch_measured,
+            mask,
+        )
+
+    return accumulate_batch
 
 
 def prepare_sharded_opt_step(
@@ -259,6 +284,10 @@ def run_optimization_loop(
     accumulate_full_pass:
         Uses all positions exactly once per epoch, accumulates batch gradients, and
         performs a single optimizer update per epoch.
+    accumulate_full_pass_streaming:
+        Same gradient accumulation and update schedule as ``accumulate_full_pass``,
+        but transfers only the current measured batch to the device. The full
+        measured pool remains on the host.
     sequential_no_repeats:
         Uses all positions exactly once per epoch and updates after every batch.
     random_with_replacement:
@@ -296,6 +325,8 @@ def run_optimization_loop(
     use_multigpu:
         If True, shard the measurement pool once, replicate params and optimizer
         state once, and run the optimization against those sharded arrays.
+        ``accumulate_full_pass_streaming`` is an exception: only its current batch
+        is sharded and transferred at a time.
     projection_fn:
         Optional projection callback with signature
         (params, non_diff_params) -> (params, non_diff_params).
@@ -341,9 +372,86 @@ def run_optimization_loop(
             raise ValueError(
                 "In multi-GPU mode, batch_size is global and must be divisible by the number of devices"
             )
-        if mode != "random_with_replacement" and n_positions % batch_size != 0:
+        if (
+            mode
+            not in {
+                "random_with_replacement",
+                "accumulate_full_pass_streaming",
+            }
+            and n_positions % batch_size != 0
+        ):
             raise ValueError(
                 "In multi-GPU full-pass modes, measured_batch_pool.shape[0] must be divisible by batch_size so batches can stay sharded with one fixed shape"
+            )
+        if mode == "accumulate_full_pass_streaming" and n_positions % batch_size != 0:
+            raise ValueError(
+                "In multi-GPU streaming mode, measured_batch_pool.shape[0] must be divisible by batch_size so the final batch can be sharded"
+            )
+
+        if mode == "accumulate_full_pass_streaming":
+            host_pool = np.asarray(jax.device_get(measured_batch_pool))
+            mesh, replicated_sharding, pool_sharding = _create_shardings(
+                measured_batch_pool
+            )
+            batch_idx_sharding = NamedSharding(mesh, P("data"))
+            params = jax.device_put(params, replicated_sharding)
+            opt_state = jax.device_put(opt_state, replicated_sharding)
+            non_diff_params = jax.device_put(non_diff_params, replicated_sharding)
+            mask = jax.device_put(mask, replicated_sharding)
+
+            accumulate_batch = prepare_accumulate_batch(loss_and_grad_fn)
+            for _epoch in range(n_steps):
+                if shuffle_each_epoch:
+                    key, subkey = jax.random.split(key)
+                    order = jax.random.permutation(subkey, n_positions)
+                else:
+                    order = jnp.arange(n_positions, dtype=jnp.int32)
+
+                accum_grads = jax.tree.map(jnp.zeros_like, params)
+                weighted_loss_sum = jnp.array(0.0, dtype=jnp.float32)
+
+                for start in range(0, n_positions, batch_size):
+                    batch_idx_host = np.asarray(order[start : start + batch_size])
+                    batch_idx = jax.device_put(
+                        jnp.asarray(batch_idx_host, dtype=jnp.int32),
+                        batch_idx_sharding,
+                    )
+                    batch_measured = jax.device_put(
+                        jnp.asarray(host_pool[batch_idx_host]),
+                        pool_sharding,
+                    )
+                    loss_val, grads = accumulate_batch(
+                        params,
+                        non_diff_params,
+                        batch_idx,
+                        batch_measured,
+                        mask,
+                    )
+                    batch_weight = len(batch_idx_host)
+                    accum_grads = jax.tree.map(
+                        lambda grad_sum, grad, weight=batch_weight: grad_sum
+                        + grad * weight,
+                        accum_grads,
+                        grads,
+                    )
+                    weighted_loss_sum = weighted_loss_sum + loss_val * batch_weight
+
+                mean_grads = jax.tree.map(
+                    lambda grad, denom=n_positions: grad / denom,
+                    accum_grads,
+                )
+                updates, opt_state = optimizer.update(mean_grads, opt_state, params)
+                params = optax.apply_updates(params, updates)
+                params, non_diff_params = effective_projection_fn(
+                    params, non_diff_params
+                )
+                loss_values.append(float(weighted_loss_sum / n_positions))
+
+            return (
+                _collect_to_host(params),
+                _collect_to_host(non_diff_params),
+                _collect_to_host(opt_state),
+                jnp.asarray(loss_values, dtype=jnp.float32),
             )
 
         (
@@ -456,7 +564,50 @@ def run_optimization_loop(
         loss_and_grad_fn,
         effective_projection_fn,
     )
-    if mode == "accumulate_full_pass":
+    if mode == "accumulate_full_pass_streaming":
+        host_pool = np.asarray(jax.device_get(measured_batch_pool))
+        accumulate_batch = prepare_accumulate_batch(loss_and_grad_fn)
+
+        for _epoch in range(n_steps):
+            if shuffle_each_epoch:
+                key, subkey = jax.random.split(key)
+                order = jax.random.permutation(subkey, n_positions)
+            else:
+                order = jnp.arange(n_positions, dtype=jnp.int32)
+
+            accum_grads = jax.tree.map(jnp.zeros_like, params)
+            weighted_loss_sum = jnp.array(0.0, dtype=jnp.float32)
+
+            for start in range(0, n_positions, batch_size):
+                batch_idx = order[start : start + batch_size].astype(jnp.int32)
+                batch_idx_host = np.asarray(batch_idx)
+                batch_measured = jnp.asarray(host_pool[batch_idx_host])
+                loss_val, grads = accumulate_batch(
+                    params,
+                    non_diff_params,
+                    batch_idx,
+                    batch_measured,
+                    mask,
+                )
+                batch_weight = len(batch_idx_host)
+                accum_grads = jax.tree.map(
+                    lambda grad_sum, grad, weight=batch_weight: grad_sum
+                    + grad * weight,
+                    accum_grads,
+                    grads,
+                )
+                weighted_loss_sum = weighted_loss_sum + loss_val * batch_weight
+
+            mean_grads = jax.tree.map(
+                lambda grad, denom=n_positions: grad / denom,
+                accum_grads,
+            )
+            updates, opt_state = optimizer.update(mean_grads, opt_state, params)
+            params = optax.apply_updates(params, updates)
+            params, non_diff_params = effective_projection_fn(params, non_diff_params)
+            loss_values.append(float(weighted_loss_sum / n_positions))
+
+    elif mode == "accumulate_full_pass":
         n_full_batches = n_positions // batch_size
         remainder = n_positions % batch_size
 
@@ -595,7 +746,8 @@ def run_optimization_loop(
     else:
         raise ValueError(
             f"Unknown mode '{mode}'. Expected one of: "
-            "'accumulate_full_pass', 'sequential_no_repeats', 'random_with_replacement'."
+            "'accumulate_full_pass', 'accumulate_full_pass_streaming', "
+            "'sequential_no_repeats', 'random_with_replacement'."
         )
 
     return (
