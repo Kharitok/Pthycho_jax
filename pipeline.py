@@ -2,7 +2,9 @@
 
 import os
 
-os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.8"
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.3"
+import time
+
 import h5py
 import jax
 import jax.numpy as jnp
@@ -309,7 +311,7 @@ models = construct_point_model_ptycho_transmission(model_parameters)
 
 # %% construct optimizable and fixed parameters
 
-n_pos = 2500
+n_pos = 1000
 # TODO here float point for shifts should be different and recaclulated from shifts
 differentiable_parameters = {
     "sample": jnp.ones(sample_size_pix).astype(jnp.complex64),
@@ -393,6 +395,7 @@ else:
 
 # %% Start recon loop
 # n_pos = 200
+time_0 = time.time()
 
 differentiable_parameters, non_differentiable_parameters, opt_state, loss_hist = (
     run_optimization_loop(
@@ -403,14 +406,18 @@ differentiable_parameters, non_differentiable_parameters, opt_state, loss_hist =
         loss_and_grad_fn=get_loss_and_grad_v,
         measured_batch_pool=batch_measured[:n_pos],
         mask=jnp.array(detector_mask).astype(bool),
-        mode="accumulate_full_pass",
-        n_steps=50,  # epochs
-        batch_size=250,  # memory-fit batch
+        mode='accumulate_full_pass_streaming',#"accumulate_full_pass",
+        n_steps=250,  # epochs
+        batch_size=100,  # memory-fit batch
         seed=0,
         shuffle_each_epoch=True,
         projection_fn=lambda x, y: (x, y),
         use_multigpu=True,
     )
+)
+time_1 = time.time()
+print(
+    f"Optimization took {int(time_1 - time_0)} seconds. {(time_1-time_0)/250} per step"
 )
 
 plt.figure()
@@ -424,13 +431,13 @@ plt.show()
 
 plt.subplot(1, 2, 1)
 plt.imshow(
-    jnp.abs(differentiable_parameters["sample"])[400:800, 400:800], cmap="turbo"
+    jnp.abs(differentiable_parameters["sample"])[200:1000, 100:1000], cmap="turbo"
 )  # [30:100,40:110]
 plt.colorbar()
 # plt.axis("off")
 plt.subplot(1, 2, 2)
 plt.imshow(
-    jnp.angle(differentiable_parameters["sample"])[400:800, 400:800], cmap="turbo"
+    jnp.angle(differentiable_parameters["sample"])[200:1000, 100:1000], cmap="turbo"
 )
 # switch off axis
 # plt.axis("off")
