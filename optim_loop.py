@@ -266,7 +266,7 @@ def run_optimization_loop(
     optimizer: optax.GradientTransformation,
     loss_and_grad_fn: Callable,
     non_diff_params: dict[str, Any],
-    measured_batch_pool: jnp.ndarray,
+    measured_batch_pool: np.ndarray,
     mask: jnp.ndarray,
     mode: TrainMode,
     n_steps: int,
@@ -307,7 +307,8 @@ def run_optimization_loop(
     non_diff_params:
         Non-optimizable parameter dict.
     measured_batch_pool:
-        Full measured data pool indexed by scan position.
+        Full measured data pool indexed by scan position. Pass this as a NumPy
+        CPU array; the loop explicitly transfers it according to ``mode``.
     mask:
         Detector/sample mask passed into the loss.
     mode:
@@ -347,6 +348,8 @@ def run_optimization_loop(
     if batch_size < 1:
         raise ValueError("batch_size must be >= 1")
 
+    # Keep the pool on the host until the selected training mode places it.
+    # measured_batch_pool = np.asarray(jax.device_get(measured_batch_pool))
     n_positions = int(measured_batch_pool.shape[0])
     if n_positions < 1:
         raise ValueError("measured_batch_pool must contain at least one position")
@@ -389,7 +392,7 @@ def run_optimization_loop(
             )
 
         if mode == "accumulate_full_pass_streaming":
-            host_pool = np.asarray(jax.device_get(measured_batch_pool))
+            host_pool = measured_batch_pool
             mesh, replicated_sharding, pool_sharding = _create_shardings(
                 measured_batch_pool
             )
@@ -565,7 +568,7 @@ def run_optimization_loop(
         effective_projection_fn,
     )
     if mode == "accumulate_full_pass_streaming":
-        host_pool = np.asarray(jax.device_get(measured_batch_pool))
+        host_pool = measured_batch_pool
         accumulate_batch = prepare_accumulate_batch(loss_and_grad_fn)
 
         for _epoch in range(n_steps):
@@ -608,6 +611,7 @@ def run_optimization_loop(
             loss_values.append(float(weighted_loss_sum / n_positions))
 
     elif mode == "accumulate_full_pass":
+        device_measured_batch_pool = jax.device_put(measured_batch_pool)
         n_full_batches = n_positions // batch_size
         remainder = n_positions % batch_size
 
@@ -666,14 +670,14 @@ def run_optimization_loop(
                     params,
                     non_diff_params,
                     full_batch_idx,
-                    measured_batch_pool,
+                    device_measured_batch_pool,
                     mask,
                 )
                 total_items += n_full_batches * batch_size
 
             if remainder > 0:
                 tail_idx = order[n_full_batches * batch_size :].astype(jnp.int32)
-                tail_measured = measured_batch_pool[tail_idx]
+                tail_measured = device_measured_batch_pool[tail_idx]
                 tail_loss, tail_grads = loss_and_grad_fn(
                     params,
                     non_diff_params,
@@ -700,6 +704,7 @@ def run_optimization_loop(
             loss_values.append(float(weighted_loss_sum / total_items))
 
     elif mode == "sequential_no_repeats":
+        device_measured_batch_pool = jax.device_put(measured_batch_pool)
         for _epoch in range(n_steps):
             if shuffle_each_epoch:
                 key, subkey = jax.random.split(key)
@@ -709,7 +714,7 @@ def run_optimization_loop(
 
             for start in range(0, n_positions, batch_size):
                 batch_idx = order[start : start + batch_size].astype(jnp.int32)
-                batch_measured = measured_batch_pool[batch_idx]
+                batch_measured = device_measured_batch_pool[batch_idx]
 
                 params, opt_state, non_diff_params, loss_val = opt_step(
                     params,
@@ -722,6 +727,7 @@ def run_optimization_loop(
                 loss_values.append(float(loss_val))
 
     elif mode == "random_with_replacement":
+        device_measured_batch_pool = jax.device_put(measured_batch_pool)
         for _step in range(n_steps):
             key, subkey = jax.random.split(key)
             batch_idx = jax.random.randint(
@@ -731,7 +737,7 @@ def run_optimization_loop(
                 maxval=n_positions,
                 dtype=jnp.int32,
             )
-            batch_measured = measured_batch_pool[batch_idx]
+            batch_measured = device_measured_batch_pool[batch_idx]
 
             params, opt_state, non_diff_params, loss_val = opt_step(
                 params,

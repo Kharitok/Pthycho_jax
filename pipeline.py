@@ -310,8 +310,8 @@ models = construct_point_model_ptycho_transmission(model_parameters)
 
 
 # %% construct optimizable and fixed parameters
-
-n_pos = 1000
+#9493
+n_pos = 4000
 # TODO here float point for shifts should be different and recaclulated from shifts
 differentiable_parameters = {
     "sample": jnp.ones(sample_size_pix).astype(jnp.complex64),
@@ -326,7 +326,7 @@ non_differentiable_parameters = {
 }
 
 
-batch_measured = jnp.sqrt(loaded_data["measured_intensities"][:n_pos])
+batch_measured = np.sqrt(loaded_data["measured_intensities"][:n_pos])
 
 # %% construct loss projectors and optimizers
 
@@ -394,7 +394,9 @@ else:
 
 
 # %% Start recon loop
-# n_pos = 200
+# n_pos = 1000
+batch_size = 100
+n_steps = 50
 time_0 = time.time()
 
 differentiable_parameters, non_differentiable_parameters, opt_state, loss_hist = (
@@ -406,9 +408,9 @@ differentiable_parameters, non_differentiable_parameters, opt_state, loss_hist =
         loss_and_grad_fn=get_loss_and_grad_v,
         measured_batch_pool=batch_measured[:n_pos],
         mask=jnp.array(detector_mask).astype(bool),
-        mode='accumulate_full_pass_streaming',#"accumulate_full_pass",
-        n_steps=250,  # epochs
-        batch_size=100,  # memory-fit batch
+        mode="accumulate_full_pass_streaming",  # "accumulate_full_pass",
+        n_steps=n_steps,  # epochs
+        batch_size=batch_size,  # memory-fit batch
         seed=0,
         shuffle_each_epoch=True,
         projection_fn=lambda x, y: (x, y),
@@ -417,7 +419,7 @@ differentiable_parameters, non_differentiable_parameters, opt_state, loss_hist =
 )
 time_1 = time.time()
 print(
-    f"Optimization took {int(time_1 - time_0)} seconds. {(time_1-time_0)/250} per step"
+    f"Optimization took {int(time_1 - time_0)} seconds. {(time_1-time_0)/n_steps} per step"
 )
 
 plt.figure()
