@@ -2,7 +2,7 @@
 
 import os
 
-os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.3"
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.5"
 import time
 
 import h5py
@@ -57,6 +57,9 @@ reconstruction_config = {
     "bin_factor": (1, 1),
     "shift_margin": 10,
     "max_correction_magnitude": 5,
+    "batch_size": 100,
+    "optim_steps": 100,
+    "use_positions_in_reconstruction": 1000,
 }
 
 
@@ -310,8 +313,8 @@ models = construct_point_model_ptycho_transmission(model_parameters)
 
 
 # %% construct optimizable and fixed parameters
-#9493
-n_pos = 4000
+# 9493
+n_pos = 1000
 # TODO here float point for shifts should be different and recaclulated from shifts
 differentiable_parameters = {
     "sample": jnp.ones(sample_size_pix).astype(jnp.complex64),
@@ -395,8 +398,8 @@ else:
 
 # %% Start recon loop
 # n_pos = 1000
-batch_size = 100
-n_steps = 50
+batch_size = 200
+n_steps = 300
 time_0 = time.time()
 
 differentiable_parameters, non_differentiable_parameters, opt_state, loss_hist = (
@@ -408,7 +411,7 @@ differentiable_parameters, non_differentiable_parameters, opt_state, loss_hist =
         loss_and_grad_fn=get_loss_and_grad_v,
         measured_batch_pool=batch_measured[:n_pos],
         mask=jnp.array(detector_mask).astype(bool),
-        mode="accumulate_full_pass_streaming",  # "accumulate_full_pass",
+        mode="accumulate_full_pass",  # "accumulate_full_pass_streaming",  # "accumulate_full_pass",
         n_steps=n_steps,  # epochs
         batch_size=batch_size,  # memory-fit batch
         seed=0,
