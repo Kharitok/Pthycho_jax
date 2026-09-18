@@ -172,6 +172,8 @@ n_modes = 2  # reconstruction_config["probe_modes_num"]
 
 modes_wavefields = np.array([probe for _ in range(n_modes)])
 modes_wavefields += 1e-2 * np.random.randn(*modes_wavefields.shape)
+
+modes_wavefields[1] = np.roll(modes_wavefields[1], shift=1, axis=-1)
 plt.imshow(np.abs(modes_wavefields[0]))
 plt.title("Initial mode wavefield (first mode)")
 plt.show()
@@ -185,6 +187,7 @@ mean_measured_intensity = loaded_data["total_ints"].mean()
 scaling_factor = mean_measured_intensity / modes_energy.sum()
 modes_wavefields *= np.sqrt(scaling_factor)
 
+
 # normalize modal weights to match exact intensity
 
 modal_weights = np.diag(np.ones(n_modes))
@@ -193,6 +196,11 @@ modal_weights = np.array(
 )
 modal_weights_scaling = loaded_data["total_ints"] / mean_measured_intensity
 modal_weights *= modal_weights_scaling[:, None, None]
+
+noise_scale = 1e-3
+amp_noise = np.random.randn(*modal_weights.shape)
+phase_noise = np.random.uniform(-np.pi, np.pi, modal_weights.shape)
+modal_weights = modal_weights + noise_scale * amp_noise * np.exp(1j * phase_noise)
 
 
 # %% Probe mask, freq_mask, detector mask
