@@ -168,12 +168,14 @@ plt.show()
 
 
 # %%### build modes and modal weights
-n_modes = 2  # reconstruction_config["probe_modes_num"]
+n_modes = 3  # reconstruction_config["probe_modes_num"]
 
 modes_wavefields = np.array([probe for _ in range(n_modes)])
 modes_wavefields += 1e-2 * np.random.randn(*modes_wavefields.shape)
 
-modes_wavefields[1] = np.roll(modes_wavefields[1], shift=1, axis=-1)
+# modes_wavefields[1] = np.roll(modes_wavefields[1], shift=1, axis=-1)
+# modes_wavefields[1] = np.roll(modes_wavefields[1], shift=1, axis=-2)
+# modes_wavefields[1] = np.roll(modes_wavefields[2], shift=1, axis=-1)
 plt.imshow(np.abs(modes_wavefields[0]))
 plt.title("Initial mode wavefield (first mode)")
 plt.show()
@@ -315,6 +317,7 @@ model_parameters = {
     "propagator_type": "Fourrier",
     "probe_shape": reconstruction_config["probe_size"],
     "max_correction_magnitude": 10,
+    "shift_margin": 5,
 }
 
 models = construct_point_model_ptycho_transmission(model_parameters)
@@ -328,8 +331,13 @@ differentiable_parameters = {
     "sample": jnp.ones(sample_size_pix).astype(jnp.complex64),
     "probe_modes": jnp.array(modes_wavefields.copy()).astype(jnp.complex64),
     "modal_weights": jnp.array(modal_weights.copy()).astype(jnp.complex64),
-    "scan_mistakes": jnp.array(np.zeros_like(float_parts)).astype(jnp.float32),
+    "scan_mistakes": jnp.array(
+        np.arctanh(float_parts / reconstruction_config["max_correction_magnitude"])
+    ).astype(jnp.float32),
 }
+# jnp.array(np.zeros_like(float_parts)).astype(jnp.float32),
+# np.arctanh(float_parts/reconstruction_config["max_correction_magnitude"])
+
 non_differentiable_parameters = {
     "sample_positions": jnp.array(int_parts - np.min(int_parts, axis=0) + 50).astype(
         jnp.int32
