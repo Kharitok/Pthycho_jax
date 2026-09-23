@@ -2,7 +2,7 @@
 
 import os
 
-os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.5"
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.8"
 import time
 
 import h5py
@@ -168,7 +168,7 @@ plt.show()
 
 
 # %%### build modes and modal weights
-n_modes = 3  # reconstruction_config["probe_modes_num"]
+n_modes = 5  # reconstruction_config["probe_modes_num"]
 
 modes_wavefields = np.array([probe for _ in range(n_modes)])
 modes_wavefields += 1e-2 * np.random.randn(*modes_wavefields.shape)
@@ -325,7 +325,7 @@ models = construct_point_model_ptycho_transmission(model_parameters)
 
 # %% construct optimizable and fixed parameters
 # 9493
-n_pos = 1000
+n_pos = 9400
 # TODO here float point for shifts should be different and recaclulated from shifts
 differentiable_parameters = {
     "sample": jnp.ones(sample_size_pix).astype(jnp.complex64),
@@ -335,9 +335,6 @@ differentiable_parameters = {
         np.arctanh(float_parts / reconstruction_config["max_correction_magnitude"])
     ).astype(jnp.float32),
 }
-# jnp.array(np.zeros_like(float_parts)).astype(jnp.float32),
-# np.arctanh(float_parts/reconstruction_config["max_correction_magnitude"])
-
 non_differentiable_parameters = {
     "sample_positions": jnp.array(int_parts - np.min(int_parts, axis=0) + 50).astype(
         jnp.int32
@@ -413,9 +410,9 @@ else:
 
 
 # %% Start recon loop
-# n_pos = 1000
-batch_size = 200
-n_steps = 300
+# n_pos = 1200
+batch_size = 100
+n_steps = 500
 time_0 = time.time()
 
 differentiable_parameters, non_differentiable_parameters, opt_state, loss_hist = (
@@ -452,13 +449,13 @@ plt.show()
 
 plt.subplot(1, 2, 1)
 plt.imshow(
-    jnp.abs(differentiable_parameters["sample"])[200:1000, 100:1000], cmap="turbo"
+    jnp.abs(differentiable_parameters["sample"]), cmap="turbo"
 )  # [30:100,40:110]
 plt.colorbar()
 # plt.axis("off")
 plt.subplot(1, 2, 2)
 plt.imshow(
-    jnp.angle(differentiable_parameters["sample"])[200:1000, 100:1000], cmap="turbo"
+    jnp.angle(differentiable_parameters["sample"]), cmap="turbo"
 )
 # switch off axis
 # plt.axis("off")
