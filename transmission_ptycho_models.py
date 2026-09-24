@@ -561,7 +561,8 @@ def intensifier(
     Returns:
         The propagated wavefield as a complex array.
     """
-    return (jnp.abs(propagated_wave) ** 2).sum(axis=0)  # Sum over modes if present
+    return (propagated_wave.real**2 + propagated_wave.imag**2).sum(axis=0)
+    # return (jnp.abs(propagated_wave) ** 2).sum(axis=0)  # Sum over modes if present
 
 
 def identity_non_linearity(
