@@ -72,7 +72,7 @@ def fresnel_propagator(
     fy = jnp.fft.fftfreq(ny, d=pixel_size)
     FX, FY = jnp.meshgrid(fx, fy)
     H = jnp.exp(-1j * (jnp.pi * wavelength * propagation_distance) * (FX**2 + FY**2))
-    return jnp.fft.ifft2(jnp.fft.fft2(exit_wave) * H)
+    return jnp.fft.ifft2(jnp.fft.fft2(exit_wave, norm="ortho") * H, norm="ortho")
 
 
 # %%
@@ -136,9 +136,10 @@ def construct_point_model_ptycho_transmission(
         "refractive",
         "exp_refractive",
         "tanh_refractive",
+        "modulus_phase",
     ]:
         raise ValueError(
-            f"Invalid sample_type: {sample_type}. Must be 'complex', 'refractive', 'exp_refractive', or 'tanh_refractive'."
+            f"Invalid sample_type: {sample_type}. Must be 'complex', 'refractive', 'exp_refractive', 'tanh_refractive', or 'modulus_phase'."
         )
     binning_factor = model_parameters.get("binning_factor", (1, 1))
     shift_margin = model_parameters.get("shift_margin", 1)
@@ -171,6 +172,8 @@ def construct_point_model_ptycho_transmission(
         sample_scaler = exp_refractive_sample_scaler
     elif sample_type == "tanh_refractive":
         sample_scaler = tanh_refractive_sample_scaler
+    elif sample_type == "modulus_phase":
+        sample_scaler = modulus_phase_sample_scaler
 
     if sample_selector_type == "slicing":
         sample_selector = prepare_slicing_sample_selector(
@@ -506,6 +509,31 @@ def tanh_refractive_sample_scaler(
     )
 
 
+def modulus_phase_sample_scaler(
+    optimizable_params: Dict,
+    fixed_params: Dict,
+    pos_index: Int32,
+) -> Complex[Array, "sample_y sample_x"]:
+    """
+    Builds the complex transmission function from separately parametrized
+    modulus and phase. Modulus is squashed through a sigmoid so it stays in
+    (0, 1) without any clipping/projection; phase is carried as a free,
+    unwrapped real array and only enters through exp(1j * phase), so no
+    phase-wrapping discontinuity is ever introduced into the gradient.
+
+    Args:
+        optimizable_params: Dictionary containing optimizable parameters.
+        fixed_params: Dictionary containing fixed parameters.
+        pos_index: Index of the position in the scan.
+
+    Returns:
+        The complex sample transmission function.
+    """
+    modulus = jax.nn.sigmoid(optimizable_params["sample_modulus_logit"])
+    phase = optimizable_params["sample_phase"]
+    return modulus * jnp.exp(1j * phase)
+
+
 # Detector models
 
 
@@ -561,7 +589,8 @@ def intensifier(
     Returns:
         The propagated wavefield as a complex array.
     """
-    return (jnp.abs(propagated_wave) ** 2).sum(axis=0)  # Sum over modes if present
+    return (propagated_wave.real**2 + propagated_wave.imag**2).sum(axis=0)
+    # return (jnp.abs(propagated_wave) ** 2).sum(axis=0)  # Sum over modes if present
 
 
 def identity_non_linearity(
@@ -631,4 +660,17 @@ def prepare_detector_binning(binning_factor: Tuple[int, int]) -> Callable:
         )
         return binned_intensity
 
+    if binning_factor == (1, 1):
+        return identity_binning
+
     return binner
+
+    # def binner(
+    #     intensity: Float[Array, "det_y det_x"],
+    #     optimizable_params: Dict,
+    #     fixed_params: Dict,
+    #     pos_index: Int32,
+    # ) -> Float[Array, "binned_det_y binned_det_x"]:
+    # by, bx = binning_factor
+    # ny, nx = intensity.shape
+    # return intensity.reshape(ny // by, by, nx // bx, bx).sum(axis=(1, 3))

@@ -2,7 +2,7 @@
 
 import os
 
-os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.5"
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.8"
 import time
 
 import h5py
@@ -168,10 +168,14 @@ plt.show()
 
 
 # %%### build modes and modal weights
-n_modes = 2  # reconstruction_config["probe_modes_num"]
+n_modes = 5  # reconstruction_config["probe_modes_num"]
 
 modes_wavefields = np.array([probe for _ in range(n_modes)])
 modes_wavefields += 1e-2 * np.random.randn(*modes_wavefields.shape)
+
+# modes_wavefields[1] = np.roll(modes_wavefields[1], shift=1, axis=-1)
+# modes_wavefields[1] = np.roll(modes_wavefields[1], shift=1, axis=-2)
+# modes_wavefields[1] = np.roll(modes_wavefields[2], shift=1, axis=-1)
 plt.imshow(np.abs(modes_wavefields[0]))
 plt.title("Initial mode wavefield (first mode)")
 plt.show()
@@ -185,6 +189,7 @@ mean_measured_intensity = loaded_data["total_ints"].mean()
 scaling_factor = mean_measured_intensity / modes_energy.sum()
 modes_wavefields *= np.sqrt(scaling_factor)
 
+
 # normalize modal weights to match exact intensity
 
 modal_weights = np.diag(np.ones(n_modes))
@@ -193,6 +198,11 @@ modal_weights = np.array(
 )
 modal_weights_scaling = loaded_data["total_ints"] / mean_measured_intensity
 modal_weights *= modal_weights_scaling[:, None, None]
+
+noise_scale = 1e-3
+amp_noise = np.random.randn(*modal_weights.shape)
+phase_noise = np.random.uniform(-np.pi, np.pi, modal_weights.shape)
+modal_weights = modal_weights + noise_scale * amp_noise * np.exp(1j * phase_noise)
 
 
 # %% Probe mask, freq_mask, detector mask
@@ -300,13 +310,14 @@ from transmission_ptycho_models import construct_point_model_ptycho_transmission
 
 model_parameters = {
     "probe_type": "fluctuating",
-    "sample_type": "complex",
+    "sample_type": "modulus_phase",  # "complex",
     "binning_factor": (1, 1),
     "shift_margin": reconstruction_config["shift_margin"],
     "sample_selector_type": "correcting",
     "propagator_type": "Fourrier",
     "probe_shape": reconstruction_config["probe_size"],
     "max_correction_magnitude": 10,
+    "shift_margin": 5,
 }
 
 models = construct_point_model_ptycho_transmission(model_parameters)
@@ -314,13 +325,19 @@ models = construct_point_model_ptycho_transmission(model_parameters)
 
 # %% construct optimizable and fixed parameters
 # 9493
-n_pos = 1000
+n_pos = 1200
 # TODO here float point for shifts should be different and recaclulated from shifts
 differentiable_parameters = {
     "sample": jnp.ones(sample_size_pix).astype(jnp.complex64),
+    # "sample_modulus_logit": jnp.array(
+    # jax.scipy.special.logit(jnp.zeros(sample_size_pix) + 0.9)
+    # ).astype(jnp.float32),
+    # "sample_phase": jnp.zeros(sample_size_pix).astype(jnp.float32),
     "probe_modes": jnp.array(modes_wavefields.copy()).astype(jnp.complex64),
     "modal_weights": jnp.array(modal_weights.copy()).astype(jnp.complex64),
-    "scan_mistakes": jnp.array(np.zeros_like(float_parts)).astype(jnp.float32),
+    "scan_mistakes": jnp.array(
+        np.arctanh(float_parts / reconstruction_config["max_correction_magnitude"])
+    ).astype(jnp.float32),
 }
 non_differentiable_parameters = {
     "sample_positions": jnp.array(int_parts - np.min(int_parts, axis=0) + 50).astype(
@@ -341,6 +358,8 @@ get_loss_and_grad_v = jax.jit(jax.value_and_grad(get_loss_v, argnums=0))
 # %%optimizer
 opt_params_per_leaf = {
     "sample": {"type": "adam", "learning_rate": 1e0},  # 1e0
+    # "sample_modulus_logit": {"type": "adam", "learning_rate": 1e0},
+    # "sample_phase": {"type": "adam", "learning_rate": 1e0},
     "probe_modes": {"type": "adam", "learning_rate": 1e0},  # 1e0
     "modal_weights": {"type": "adam", "learning_rate": 1e-1},  # 1e-3
     "scan_mistakes": {"type": "adam", "learning_rate": 1e-2},  # 1e-2
@@ -351,18 +370,24 @@ opt_state = optimizer.init(differentiable_parameters)
 
 # %% show before
 
+
+if "sample" in differentiable_parameters:
+    sample = differentiable_parameters["sample"]
+else:
+    sample_modulus_logit = differentiable_parameters["sample_modulus_logit"]
+    sample_phase = differentiable_parameters["sample_phase"]
+    sample = jax.nn.sigmoid(sample_modulus_logit) * jnp.exp(1j * sample_phase)
 plt.subplot(1, 2, 1)
-plt.imshow(
-    jnp.abs(differentiable_parameters["sample"]), cmap="turbo"
-)  # [30:100,40:110]
+plt.imshow(jnp.abs(sample), cmap="turbo")  # [30:100,40:110]
 plt.colorbar()
 # plt.axis("off")
 plt.subplot(1, 2, 2)
-plt.imshow(jnp.angle(differentiable_parameters["sample"]), cmap="turbo")
+plt.imshow(jnp.angle(sample), cmap="turbo")
 # switch off axis
 # plt.axis("off")
 plt.tight_layout()
 plt.show()
+
 plt.figure()
 if differentiable_parameters["probe_modes"].ndim < 3:
     plt.figure()
@@ -397,9 +422,9 @@ else:
 
 
 # %% Start recon loop
-# n_pos = 1000
-batch_size = 200
-n_steps = 300
+# n_pos = 1200
+batch_size = 100
+n_steps = 400
 time_0 = time.time()
 
 differentiable_parameters, non_differentiable_parameters, opt_state, loss_hist = (
@@ -433,17 +458,19 @@ plt.title("Optimization Loss History")
 plt.show()
 
 # %% show after
-
+if "sample" in differentiable_parameters:
+    sample = differentiable_parameters["sample"]
+else:
+    sample_modulus_logit = differentiable_parameters["sample_modulus_logit"]
+    sample_phase = differentiable_parameters["sample_phase"]
+    sample = jax.nn.sigmoid(sample_modulus_logit) * jnp.exp(1j * sample_phase)
+plt.figure(figsize=(15, 15))
 plt.subplot(1, 2, 1)
-plt.imshow(
-    jnp.abs(differentiable_parameters["sample"])[200:1000, 100:1000], cmap="turbo"
-)  # [30:100,40:110]
+plt.imshow(jnp.abs(sample), cmap="turbo")  # [30:100,40:110]
 plt.colorbar()
 # plt.axis("off")
 plt.subplot(1, 2, 2)
-plt.imshow(
-    jnp.angle(differentiable_parameters["sample"])[200:1000, 100:1000], cmap="turbo"
-)
+plt.imshow(jnp.angle(sample), cmap="turbo")
 # switch off axis
 # plt.axis("off")
 plt.tight_layout()
