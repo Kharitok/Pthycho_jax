@@ -67,3 +67,28 @@ def evaluate_coherence_reconstruction(
         "eigenvalues_sim": power_sim,
         "eigenvalues_rec": power_rec,
     }
+
+
+
+def orthogonalize_modes(modes: jnp.ndarray) -> jnp.ndarray:
+    """
+    Orthogonalizes a set of spatial modes using the Gram-Schmidt process.
+
+    Args:
+        modes: Input modes [N, Y, X]
+
+    Returns:
+        Orthogonalized modes [N, Y, X]
+    """
+    N, Y, X = modes.shape
+    modes_flat = modes.reshape(N, Y * X)
+    orth_modes_flat = jnp.zeros_like(modes_flat, dtype=modes_flat.dtype)
+
+    for i in range(N):
+        v = modes_flat[i]
+        for j in range(i):
+            v -= jnp.dot(jnp.conj(orth_modes_flat[j]), v) * orth_modes_flat[j]
+        v /= jnp.linalg.norm(v) + 1e-12
+        orth_modes_flat = orth_modes_flat.at[i].set(v)
+
+    return orth_modes_flat.reshape(N, Y, X)

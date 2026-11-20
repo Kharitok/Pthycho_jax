@@ -11,13 +11,16 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 
-from dataloader import (
+from ptycho_jax.data_loading.dataloader import (
     get_reconstruction_resolution,
     load_dataset,
     load_exp_params_from_attributes,
     process_scan_coordinates,
 )
-from probe_initialization import get_thresholded_intensity, init_probe_simple_fft
+from ptycho_jax.transmission.probe_initialization import (
+    get_thresholded_intensity,
+    init_probe_simple_fft,
+)
 
 # %%
 
@@ -96,7 +99,7 @@ resolution = get_reconstruction_resolution(
 )
 reconstruction_pix_size = resolution[0]
 
-print(f"Reconstruction resolution: {reconstruction_pix_size/1e-9:.1f} nm")
+print(f"Reconstruction resolution: {reconstruction_pix_size / 1e-9:.1f} nm")
 
 
 int_parts, float_parts = process_scan_coordinates(
@@ -289,7 +292,7 @@ reconstruction_config = {
 }
 reconstruction_config["probe_size"] = loaded_data["mean_image"].shape
 
-from loss_and_reg import (
+from ptycho_jax.transmission.loss_and_reg import (
     combine_regularizers,
     create_regularizer,
     create_tv_reg,
@@ -298,19 +301,21 @@ from loss_and_reg import (
     join_loss_and_forward_batched,
     join_loss_and_reg,
 )
-from optim_loop import run_optimization_loop
-from optimizers import prepare_optimizer
+from ptycho_jax.transmission.optim_loop import run_optimization_loop
+from ptycho_jax.transmission.optimizers import prepare_optimizer
 
 # %% Here we should have all data loaded and prepared
 # Now it's time for the model constructions
-from transmission_ptycho_models import construct_point_model_ptycho_transmission
+from ptycho_jax.transmission.transmission_ptycho_models import (
+    construct_point_model_ptycho_transmission,
+)
 
 # %% construct model
 
 
 model_parameters = {
     "probe_type": "fluctuating",
-    "sample_type": "modulus_phase",  # "complex",
+    "sample_type": "complex",  # "modulus_phase",  # "complex",
     "binning_factor": (1, 1),
     "shift_margin": reconstruction_config["shift_margin"],
     "sample_selector_type": "correcting",
@@ -325,7 +330,7 @@ models = construct_point_model_ptycho_transmission(model_parameters)
 
 # %% construct optimizable and fixed parameters
 # 9493
-n_pos = 1200
+n_pos = 9000
 # TODO here float point for shifts should be different and recaclulated from shifts
 differentiable_parameters = {
     "sample": jnp.ones(sample_size_pix).astype(jnp.complex64),
@@ -350,10 +355,16 @@ batch_measured = np.sqrt(loaded_data["measured_intensities"][:n_pos])
 
 # %% construct loss projectors and optimizers
 
+# regularization
+
+# tv_reg = create_tv_reg(weight=1e-4)  # Example total variation regularization
+
+
 # loss
 
 get_loss_v = jax.jit(join_loss_and_forward_batched(gauss_loss, models["point_model"]))
 get_loss_and_grad_v = jax.jit(jax.value_and_grad(get_loss_v, argnums=0))
+
 
 # %%optimizer
 opt_params_per_leaf = {
@@ -410,20 +421,20 @@ else:
         plt.subplot(2, n_modes, i + 1)
         plt.imshow(jnp.abs(differentiable_parameters["probe_modes"][i]), cmap="viridis")
         plt.axis("off")
-        plt.title(f"Mode {i+1} Abs")
+        plt.title(f"Mode {i + 1} Abs")
         plt.subplot(2, n_modes, n_modes + i + 1)
         plt.imshow(
             jnp.angle(differentiable_parameters["probe_modes"][i]), cmap="twilight"
         )
         plt.axis("off")
-        plt.title(f"Mode {i+1} Angle")
+        plt.title(f"Mode {i + 1} Angle")
     plt.tight_layout()
     plt.show()
 
 
 # %% Start recon loop
 # n_pos = 1200
-batch_size = 100
+batch_size = 600
 n_steps = 400
 time_0 = time.time()
 
@@ -447,7 +458,7 @@ differentiable_parameters, non_differentiable_parameters, opt_state, loss_hist =
 )
 time_1 = time.time()
 print(
-    f"Optimization took {int(time_1 - time_0)} seconds. {(time_1-time_0)/n_steps} per step"
+    f"Optimization took {int(time_1 - time_0)} seconds. {(time_1 - time_0) / n_steps} per step"
 )
 
 plt.figure()
@@ -497,14 +508,174 @@ else:
         plt.subplot(2, n_modes, i + 1)
         plt.imshow(jnp.abs(differentiable_parameters["probe_modes"][i]), cmap="viridis")
         plt.axis("off")
-        plt.title(f"Mode {i+1} Abs")
+        plt.title(f"Mode {i + 1} Abs")
         plt.subplot(2, n_modes, n_modes + i + 1)
         plt.imshow(
             jnp.angle(differentiable_parameters["probe_modes"][i]), cmap="twilight"
         )
         plt.axis("off")
-        plt.title(f"Mode {i+1} Angle")
+        plt.title(f"Mode {i + 1} Angle")
     plt.tight_layout()
     plt.show()
+
+# %%
+
+
+# dataloadin nanomax
+
+
+datapath = "/gpfs/exfel/data/scratch/kkonstantin/Projects/NanoMax/Test_reconstruction/download_data/09_kev/raw/0001_setup/000082.h5"
+
+# #print key, shape  for datasets for each group recursevely as tree
+# def print_h5_tree(name, obj):
+#     if isinstance(obj, h5py.Dataset):
+#         print(f"{name}: {obj.shape}")
+
+# with h5py.File(datapath, "r") as f:
+#     f.visititems(print_h5_tree)
+
+
+from pathlib import Path
+
+import h5py
+import hdf5plugin
+
+
+class H5DataLoader:
+    def __init__(self, filepath: str | Path, mode: str = "r") -> None:
+        self.filepath = Path(filepath)
+        self.mode = mode
+        self._file: h5py.File | None = None
+
+    def __enter__(self) -> "H5DataLoader":
+        if self._file is not None:
+            raise RuntimeError("H5DataLoader context is already open.")
+        self._file = h5py.File(self.filepath, self.mode)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        if self._file is not None:
+            self._file.close()
+            self._file = None
+
+    @property
+    def file(self) -> h5py.File:
+        if self._file is None:
+            raise RuntimeError("Cannot access 'self.file' outside of a 'with' block.")
+        return self._file
+
+    def read_dataset(self, key: str):
+        return self.file[key][:]
+
+
+class NanoMaxDataset:
+    detector_path: str = "/entry/measurement/eiger4m/frames"
+    scan_x_path: str = "/entry/measurement/sx"
+    scan_y_path: str = "/entry/measurement/sy"
+    # detector_distance_path: str = "/entry/measurement/detector_distance"
+    energy_path: str = "/entry/snapshots/pre_scan/energy_raw"
+    # defocus_path: str = "/entry/measurement/defocus"
+
+    def __init__(
+        self,
+        datapath: str | Path,
+        detector_distance: float,
+        detector_pixel_size: float,
+        defocus: float,
+    ) -> None:
+        self.datapath = Path(datapath)
+        print(f"Initialized NanoMaxDataset with datapath: {self.datapath}")
+        self.detector_distance = detector_distance
+        self.detector_pixel_size = detector_pixel_size
+        self.defocus = defocus
+
+    def __getitem__(self, key: str):
+        # Context manager lives inside the class; file closes automatically on exit
+        with H5DataLoader(self.datapath) as loader:
+            return loader.read_dataset(key)
+
+    @property
+    def detector_data(self) -> h5py.File:
+        with H5DataLoader(self.datapath) as loader:
+            return loader.read_dataset(self.detector_path)
+
+    @property
+    def scan_x_data(self) -> h5py.File:
+        with H5DataLoader(self.datapath) as loader:
+            return loader.read_dataset(self.scan_x_path)
+
+    @property
+    def scan_y_data(self) -> h5py.File:
+        with H5DataLoader(self.datapath) as loader:
+            return loader.read_dataset(self.scan_y_path)
+
+    # @property
+    # def detector_distance_data(self) -> h5py.File:
+    #     with H5DataLoader(self.datapath) as loader:
+    #         return loader.read_dataset(self.detector_distance_path)
+
+    @property
+    def energy_data(self) -> h5py.File:
+        with H5DataLoader(self.datapath) as loader:
+            return loader.read_dataset(self.energy_path)
+
+    # @property
+    # def defocus_data(self) -> h5py.File:
+    #     with H5DataLoader(self.datapath) as loader:
+    #         return loader.read_dataset(self.defocus_path)
+
+    @property
+    def detector_mask(self) -> h5py.File:
+        measured_data = self.detector_data
+        return measured_data[0] < measured_data[0].max()
+
+
+dataset = NanoMaxDataset(
+    datapath, detector_distance=7.180, detector_pixel_size=75e-6, defocus=1500e-6
+)
+
+
+# %%
+
+
+detector_data = dataset.detector_data
+mask = dataset.detector_mask
+
+mean_data = (detector_data * mask).mean(axis=0)
+
+plt.figure()
+plt.imshow(mean_data, norm="asinh")
+plt.colorbar()
+
+from scipy.ndimage import center_of_mass
+
+com = center_of_mass(mean_data)
+patch = mean_data[
+    int(com[0]) - 200 : int(com[0]) + 200, int(com[1]) - 200 : int(com[1]) + 200
+]
+com_patch = center_of_mass(patch > patch.max() * 0.1)
+
+com_all = (com[0] - 200 + com_patch[0], com[1] - 200 + com_patch[1])
+
+
+print(f"Center of mass of the mean detector data: {com}")
+print(f"Refined center of mass from patch: {com_all}")
+plt.figure()
+plt.imshow(mean_data, norm="log")
+plt.scatter(com[1], com[0], color="red", marker="x")
+plt.scatter(com_all[1], com_all[0], color="blue", marker="o")
+plt.title("Mean Detector Data with Center of Mass")
+plt.colorbar()
+
+# %%
+
+
+plt.figure()
+plt.imshow(
+    patch,
+)
+plt.scatter(com_patch[1], com_patch[0], color="red", marker="x")
+plt.title("Refined Patch with Center of Mass")
+plt.colorbar()
 
 # %%
