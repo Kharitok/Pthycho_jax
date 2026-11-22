@@ -1,0 +1,13 @@
+{
+  "reference_intensity_relative_error": 2.643590388327731e-16,
+  "object_dot_relative_error": 2.4372575791288126e-16,
+  "object_linear_transpose_relative_error": 2.1606685185116553e-16,
+  "probe_dot_relative_error": 1.1914440585661081e-16,
+  "probe_linear_transpose_relative_error": 9.206790222300672e-17,
+  "PF_idempotence_relative_error": 2.611687619929001e-16,
+  "PF_intensity_relative_error": 3.4939003822834e-16,
+  "gauge_field_relative_error": 3.4809240993079753e-16,
+  "object_LS_gradient_ratio": 1.421903881516908e-12,
+  "probe_LS_gradient_ratio": 2.120323088794358e-15,
+  "handoff_MSE_relative_error": 3.1266387175204608e-15
+}
