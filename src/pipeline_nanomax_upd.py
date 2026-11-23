@@ -328,7 +328,7 @@ def _save_figure(fig, path: Path):
     plt.close(fig)
 
 
-def save_preparation_figure(data: dict, output: Path):
+def save_preparation_figure(data: dict, output: Path, filename_prefix: str = ""):
     fig, axes = plt.subplots(2, 3, figsize=(13, 8))
     xy = data["scan_coords_pix"] * data["reconstruction_pix_size"] / 1e-6
     scatter = axes[0, 0].scatter(xy[:, 1], xy[:, 0], c=data["total_ints"], s=20)
@@ -358,7 +358,7 @@ def save_preparation_figure(data: dict, output: Path):
         ylabel="Counts",
         title="Masked cropped intensity totals",
     )
-    _save_figure(fig, output / "preparation.png")
+    _save_figure(fig, output / f"{filename_prefix}preparation.png")
 
 
 def _save_probe(modes, path: Path, title: str):
@@ -377,7 +377,16 @@ def _save_probe(modes, path: Path, title: str):
 
 
 def _save_reconstruction_figures(
-    data, state, params, initial, final, history, folder, config
+    data,
+    state,
+    params,
+    initial,
+    final,
+    history,
+    folder,
+    config,
+    filename_prefix="",
+    objective_label="Masked amplitude MSE",
 ):
     sample = np.asarray(params["sample"])
     coverage = np.zeros(sample.shape)
@@ -425,14 +434,16 @@ def _save_reconstruction_figures(
         )
         ax.set(title=title, xlabel="x (µm)", ylabel="y (µm)")
         fig.colorbar(artist, ax=ax, shrink=0.8)
-    _save_figure(fig, folder / "sample.png")
+    _save_figure(fig, folder / f"{filename_prefix}sample.png")
     _save_probe(
         state["params"]["probe_modes"],
-        folder / "probe_initial.png",
+        folder / f"{filename_prefix}probe_initial.png",
         "Initial probe modes",
     )
     _save_probe(
-        params["probe_modes"], folder / "probe_final.png", "Reconstructed probe modes"
+        params["probe_modes"],
+        folder / f"{filename_prefix}probe_final.png",
+        "Reconstructed probe modes",
     )
     fig, ax = plt.subplots(figsize=(7, 4))
     ax.semilogy(np.arange(len(history)), history, label="Before each epoch update")
@@ -443,11 +454,9 @@ def _save_reconstruction_figures(
         color="red",
         label="Final evaluation",
     )
-    ax.set(
-        xlabel="Epoch", ylabel="Masked amplitude MSE", title="Reconstruction objective"
-    )
+    ax.set(xlabel="Epoch", ylabel=objective_label, title="Reconstruction objective")
     ax.legend()
-    _save_figure(fig, folder / "loss.png")
+    _save_figure(fig, folder / f"{filename_prefix}loss.png")
     fig, axes = plt.subplots(2, 3, figsize=(12, 8))
     images = [
         data["measured_intensities"][0],
@@ -471,7 +480,7 @@ def _save_reconstruction_figures(
         artist = ax.imshow(np.fft.fftshift(value), cmap="magma")
         ax.set_title(title + ("" if i == 5 else " [log10(1+I)]"))
         fig.colorbar(artist, ax=ax, shrink=0.8)
-    _save_figure(fig, folder / "diffraction.png")
+    _save_figure(fig, folder / f"{filename_prefix}diffraction.png")
     return coverage
 
 

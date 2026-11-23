@@ -1,0 +1,4 @@
+!tests/
+!tests/*.py
+!NANOMAX_V2.md
+!NANOMAX_JSON.md

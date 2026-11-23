@@ -12,12 +12,60 @@ Type Conventions:
 """
 
 from collections.abc import Callable, Sequence
+import math
 from typing import Any, cast
 
 import jax
 import jax.numpy as jnp
 
 # projections
+
+
+def create_smooth_spatial_support(
+    shape: tuple[int, int],
+    radius_px: float,
+    decay_px: float,
+    center_px: tuple[float, float] | None = None,
+) -> jnp.ndarray:
+    """Circular sample-plane amplitude support with a cosine edge taper.
+
+    The support is one up to ``radius_px`` and decays smoothly to exactly zero
+    at ``radius_px + decay_px``. Coordinates are (row, column) in pixels;
+    the default center is the geometric center of the final two array axes.
+    """
+    if len(shape) != 2 or any(int(n) != n or n < 1 for n in shape):
+        raise ValueError("Support shape must contain two positive integers.")
+    if not all(math.isfinite(v) and v > 0 for v in (radius_px, decay_px)):
+        raise ValueError("Support radius and decay must be finite and positive.")
+    center = tuple((n - 1) / 2 for n in shape) if center_px is None else center_px
+    if len(center) != 2 or not all(math.isfinite(v) for v in center):
+        raise ValueError("Support center must contain two finite coordinates.")
+    y = jnp.arange(shape[0], dtype=jnp.float32)[:, None] - center[0]
+    x = jnp.arange(shape[1], dtype=jnp.float32)[None, :] - center[1]
+    r = jnp.sqrt(y * y + x * x)
+    t = jnp.clip((r - radius_px) / decay_px, 0.0, 1.0)
+    return jnp.where(r >= radius_px + decay_px, 0.0, 0.5 * (1 + jnp.cos(jnp.pi * t)))
+
+
+def create_spatial_support_projection(
+    support: jnp.ndarray, parameter_name: str = "probe_modes"
+) -> Callable:
+    """Multiply a named parameter by a spatial support after each update.
+
+    A 2D support broadcasts over all probe modes. This is a soft support
+    operation: repeated applications attenuate the tapered region repeatedly.
+    Input dictionaries/buffers are preserved, including retained initial guesses.
+    """
+    support = jnp.asarray(support)
+
+    @jax.jit
+    def project(params, fixed_params):
+        return {
+            **params,
+            parameter_name: params[parameter_name] * support,
+        }, fixed_params
+
+    return project
 
 
 def create_frequency_space_mask_projector(mask: jnp.ndarray) -> Callable:
