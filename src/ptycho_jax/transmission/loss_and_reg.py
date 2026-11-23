@@ -2,6 +2,7 @@
 Loss and regularization functions for complex optimization.
 """
 
+import math
 from typing import Callable, Dict
 
 import jax
@@ -236,6 +237,51 @@ def combine_regularizers(reg_list: list) -> Callable:
         return total_reg
 
     return combined_regularizer
+
+
+def create_parameter_tv_regularizer(
+    weights: Dict[str, float],
+    p=2.0,
+    q=1.0,
+    epsilon=1e-6,
+    normalize=False,
+) -> Callable:
+    """Compose weighted TV penalties on named complex parameter arrays.
+
+    TV acts directly on complex differences, avoiding wrapped-phase edges.
+    With ``normalize=True``, divide each spatial array (each mode separately)
+    by its RMS amplitude before TV. This removes the global amplitude-scaling
+    gauge from the penalty, including compensation via modal weights. Exact
+    zero arrays use unit scale, with finite zero gradients. Normalization does
+    not remove arbitrary changes of modal basis.
+
+    Weights are nonnegative constants. Attach the result to a *batched mean*
+    data loss with ``join_loss_and_reg``; full-pass batch averaging then counts
+    each penalty once per optimizer update, including partial final batches.
+    An empty mapping or zero weights disables regularization.
+    """
+    if any(not math.isfinite(w) or w < 0 for w in weights.values()):
+        raise ValueError("TV weights must be finite and nonnegative.")
+    if not all(math.isfinite(v) and v > 0 for v in (p, q, epsilon)):
+        raise ValueError("TV p, q and epsilon must be finite and positive.")
+    tv = create_tv_reg(p=p, q=q, epsilon=epsilon)
+    active = tuple((name, weight) for name, weight in weights.items() if weight > 0)
+
+    def regularizer(params, fixed_params):
+        total = jnp.array(0.0, dtype=jnp.float32)
+        for name, weight in active:
+            value = params[name]
+            if normalize:
+                mean_square = jnp.mean(
+                    jnp.real(value * jnp.conj(value)), axis=(-2, -1), keepdims=True
+                )
+                # Select before sqrt to avoid an infinite derivative at zero.
+                rms = jnp.sqrt(jnp.where(mean_square > 0, mean_square, 1.0))
+                value = value / rms
+            total = total + weight * tv(value)
+        return total
+
+    return regularizer
 
 
 def join_loss_and_reg(loss_and_forward_func: Callable, reg_func: Callable) -> Callable:

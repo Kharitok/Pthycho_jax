@@ -259,8 +259,8 @@ def analyze_modal_evolution(decomposition, frame_indices, pixel_size_m) -> dict:
     }
 
 
-def _save(fig, path):
-    fig.savefig(path, dpi=150, bbox_inches="tight")
+def _save(fig, path, filename_prefix=""):
+    fig.savefig(path.with_name(filename_prefix + path.name), dpi=150, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -272,7 +272,7 @@ def _json_default(value):
     raise TypeError(type(value).__name__)
 
 
-def _plot_modes(raw, decomposition, output, pixel):
+def _plot_modes(raw, decomposition, output, pixel, filename_prefix=""):
     n = len(decomposition["svd_modes"])
     dy, dx = pixel
     ny, nx = raw.shape[-2:]
@@ -291,7 +291,7 @@ def _plot_modes(raw, decomposition, output, pixel):
     axes[0, 0].set_ylabel("y (µm)")
     axes[1, 0].set_ylabel("y (µm)")
     fig.suptitle("SVD-orthogonalized spatial basis; transformed weights preserve every fitted field")
-    _save(fig, output / "probe_modes_svd.png")
+    _save(fig, output / "probe_modes_svd.png", filename_prefix)
 
     fig, axes = plt.subplots(2, n, figsize=(max(5, 3*n), 6), squeeze=False, layout="constrained")
     for row, modes in enumerate((raw, decomposition["coherent_modes"])):
@@ -311,7 +311,7 @@ def _plot_modes(raw, decomposition, output, pixel):
     phase_key = plt.cm.ScalarMappable(norm=plt.Normalize(-np.pi, np.pi), cmap="hsv")
     fig.colorbar(phase_key, ax=axes.ravel().tolist(), orientation="horizontal", fraction=0.035,
                  pad=0.05, label="Phase (rad; black means zero amplitude)")
-    _save(fig, output / "probe_modes_hsv.png")
+    _save(fig, output / "probe_modes_hsv.png", filename_prefix)
 
     fractions = decomposition["mode_fractions"]
     fig, ax = plt.subplots(figsize=(7, 4), layout="constrained")
@@ -320,10 +320,10 @@ def _plot_modes(raw, decomposition, output, pixel):
         ax.text(i+1, fraction, f"{100*fraction:.3f}%", ha="center", va="bottom")
     ax.set(xlabel="Ensemble coherent mode", ylabel="Fraction of mean beam power",
            title=f"Physical mode spectrum; purity = {np.sum(fractions**2):.5f}", ylim=(0, 1.12))
-    _save(fig, output / "coherent_mode_spectrum.png")
+    _save(fig, output / "coherent_mode_spectrum.png", filename_prefix)
 
 
-def _plot_propagation(propagation, nominal_defocus, output):
+def _plot_propagation(propagation, nominal_defocus, output, filename_prefix=""):
     z = propagation["z_m"] * 1e3
     focus = propagation["focus_z_m"] * 1e3
     for coordinate, key, filename in (("x", "projection_x", "propagation_xz.png"),
@@ -345,7 +345,7 @@ def _plot_propagation(propagation, nominal_defocus, output):
         axes[0].set_ylabel(f"{coordinate} (µm)")
         axes[1].legend(fontsize=8)
         fig.suptitle(f"Near-field incoherent beam propagation: {coordinate}-z projection")
-        _save(fig, output / filename)
+        _save(fig, output / filename, filename_prefix)
 
     planes = list(propagation["selected_planes"]) + [propagation["focus_plane"]]
     distances = list(propagation["selected_z_m"]) + [propagation["focus_z_m"]]
@@ -358,7 +358,7 @@ def _plot_propagation(propagation, nominal_defocus, output):
         ax.set(title=("RMS focus: " if i == len(planes)-1 else "") + f"z={distance*1e3:+.4f} mm",
                xlabel="x (µm)", ylabel="y (µm)")
     fig.suptitle("Propagated mean beam intensity; each plane normalized, log10 scale [-5,0]")
-    _save(fig, output / "propagation_planes.png")
+    _save(fig, output / "propagation_planes.png", filename_prefix)
 
     fig, axes = plt.subplots(2, 1, figsize=(9, 8), sharex=True, layout="constrained")
     axes[0].plot(z, propagation["d4sigma_x_m"]*1e6, label="x D4σ")
@@ -375,10 +375,10 @@ def _plot_propagation(propagation, nominal_defocus, output):
                     label=f"Minimum area: {propagation['effective_area_focus_z_m']*1e3:+.4f} mm")
     axes[1].set(xlabel="z from sample (mm; + downstream)", ylabel="(∫I)²/∫I² (µm²)")
     axes[1].legend()
-    _save(fig, output / "focus_estimate.png")
+    _save(fig, output / "focus_estimate.png", filename_prefix)
 
 
-def _plot_scan(scan, output):
+def _plot_scan(scan, output, filename_prefix=""):
     initial, corrected, correction = scan["initial_m"]*1e6, scan["corrected_m"]*1e6, scan["corrections_m"]*1e6
     shots = scan["frame_indices"] + 1
     fig, axes = plt.subplots(1, 2, figsize=(13, 5), layout="constrained")
@@ -394,7 +394,7 @@ def _plot_scan(scan, output):
     for ax in axes:
         ax.set(xlabel="x (µm)", ylabel="y (µm)")
         ax.set_aspect("equal")
-    _save(fig, output / "scan_positions.png")
+    _save(fig, output / "scan_positions.png", filename_prefix)
 
     fig, axes = plt.subplots(3, 1, figsize=(11, 8), sharex=True, layout="constrained")
     for ax, component, label in ((axes[0], 1, "x"), (axes[1], 0, "y")):
@@ -408,10 +408,10 @@ def _plot_scan(scan, output):
     axes[2].plot(shots, np.linalg.norm(scan["corrections_m"], axis=1)*1e9, color="black")
     axes[2].set(xlabel="Acquisition frame number (1-based, original HDF5 order)", ylabel="Correction magnitude (nm)")
     fig.suptitle("Position corrections versus shot order: descriptive drift check, not elapsed time")
-    _save(fig, output / "position_drift.png")
+    _save(fig, output / "position_drift.png", filename_prefix)
 
 
-def _plot_modal_evolution(raw_weights, evolution, output):
+def _plot_modal_evolution(raw_weights, evolution, output, filename_prefix=""):
     shots = evolution["frame_indices"] + 1
     n, m = raw_weights.shape[1:]
     flat = raw_weights.reshape(len(shots), -1)
@@ -432,7 +432,7 @@ def _plot_modal_evolution(raw_weights, evolution, output):
         axes[2].plot(shots, abs(raw_weights[:, i, i]), label=f"|W[{i+1},{i+1}]|")
     axes[2].set(xlabel="Acquisition frame number", ylabel="Diagonal amplitude weights")
     axes[2].legend(ncol=min(n, 5))
-    _save(fig, output / "modal_weights_raw.png")
+    _save(fig, output / "modal_weights_raw.png", filename_prefix)
 
     fractions = evolution["mode_fractions"]
     fig, axes = plt.subplots(3, 1, figsize=(11, 9), sharex=True, layout="constrained")
@@ -447,7 +447,7 @@ def _plot_modal_evolution(raw_weights, evolution, output):
     axes[2].plot(shots, evolution["purity"], label="Per-shot coherence purity")
     axes[2].set(xlabel="Acquisition frame number (1-based)", ylabel="Normalized power / purity")
     axes[2].legend()
-    _save(fig, output / "modal_weights_evolution.png")
+    _save(fig, output / "modal_weights_evolution.png", filename_prefix)
 
     fig, axes = plt.subplots(2, 1, figsize=(11, 7), sharex=True, layout="constrained")
     centroids = evolution["centroids_m"]
@@ -459,17 +459,22 @@ def _plot_modal_evolution(raw_weights, evolution, output):
     axes[1].set(xlabel="Acquisition frame number (1-based)", ylabel="D4σ diameter (µm)")
     for ax in axes:
         ax.legend()
-    _save(fig, output / "beam_evolution.png")
+    _save(fig, output / "beam_evolution.png", filename_prefix)
 
 
-def write_diagnostics(mode_folder, *, half_range_m=None, z_samples=201, padding_factor=3) -> dict:
-    """Analyze a completed reconstruction and save individual figures and arrays."""
+def write_diagnostics(mode_folder, *, half_range_m=None, z_samples=201, padding_factor=3,
+                      filename_prefix="") -> dict:
+    """Analyze saved parameters; optional prefix applies to all inputs/outputs.
+
+    Orthogonalization transforms analysis copies and compensates shot weights;
+    it preserves fitted fields and does not overwrite optimized parameters.
+    """
     folder = Path(mode_folder)
     output = folder / "diagnostics"
     output.mkdir(parents=True, exist_ok=True)
-    with np.load(folder / "reconstruction.npz") as archive:
+    with np.load(folder / f"{filename_prefix}reconstruction.npz") as archive:
         data = {key: archive[key] for key in archive.files}
-    metrics = json.loads((folder / "metrics.json").read_text())
+    metrics = json.loads((folder / f"{filename_prefix}metrics.json").read_text())
     geometry = metrics["geometry"]
     nominal = geometry["assumed_defocus_at_sample_m"]
     if half_range_m is None:
@@ -485,10 +490,10 @@ def write_diagnostics(mode_folder, *, half_range_m=None, z_samples=201, padding_
     scan = analyze_scan_positions(data["scan_coords_pix"], data["position_corrections_pix"],
                                   data["frame_indices"], pixel)
     evolution = analyze_modal_evolution(decomposition, data["frame_indices"], pixel)
-    _plot_modes(data["probe_modes"], decomposition, output, pixel)
-    _plot_propagation(propagation, nominal, output)
-    _plot_scan(scan, output)
-    _plot_modal_evolution(data["modal_weights"][scan["order"]], evolution, output)
+    _plot_modes(data["probe_modes"], decomposition, output, pixel, filename_prefix)
+    _plot_propagation(propagation, nominal, output, filename_prefix)
+    _plot_scan(scan, output, filename_prefix)
+    _plot_modal_evolution(data["modal_weights"][scan["order"]], evolution, output, filename_prefix)
     relative_rms = np.sqrt(np.mean(scan["corrections_m"]**2, axis=0))
     summary = {
         "estimated_focus_z_m": propagation["focus_z_m"],
@@ -517,18 +522,18 @@ def write_diagnostics(mode_folder, *, half_range_m=None, z_samples=201, padding_
         "acquisition_frame_indices": scan["frame_indices"],
         "references": {"Fresnel propagation": PROPAGATION_SOURCE, "D4sigma definition": BEAM_WIDTH_SOURCE},
     }
-    (output / "summary.json").write_text(json.dumps(summary, default=_json_default, indent=2, allow_nan=False) + "\n")
+    (output / f"{filename_prefix}summary.json").write_text(json.dumps(summary, default=_json_default, indent=2, allow_nan=False) + "\n")
     arrays = {}
     for prefix, values in (("basis", decomposition), ("propagation", propagation), ("scan", scan), ("evolution", evolution)):
         for key, value in values.items():
             arrays[f"{prefix}_{key}"] = value
-    np.savez_compressed(output / "diagnostics.npz", **arrays)
-    _write_report(output, summary)
+    np.savez_compressed(output / f"{filename_prefix}diagnostics.npz", **arrays)
+    _write_report(output, summary, filename_prefix)
     print(f"Diagnostics: RMS focus z={summary['estimated_focus_z_m']*1e3:+.5f} mm; saved {output}", flush=True)
     return summary
 
 
-def _write_report(output, summary):
+def _write_report(output, summary, filename_prefix=""):
     s = summary
     images = [
         ("SVD-orthogonalized modes", "probe_modes_svd.png"),
@@ -598,6 +603,7 @@ def _write_report(output, summary):
         f"Width reference: [NIST SP 250-87]({BEAM_WIDTH_SOURCE}).", "",
     ]
     for title, filename in images:
-        report += [f"## {title}", "", f"![{title}]({filename})", ""]
-    report += ["Numeric data: [diagnostics.npz](diagnostics.npz); [summary.json](summary.json).", ""]
-    (output / "results.md").write_text("\n".join(report))
+        report += [f"## {title}", "", f"![{title}]({filename_prefix}{filename})", ""]
+    report += [f"Numeric data: [diagnostics.npz]({filename_prefix}diagnostics.npz); "
+               f"[summary.json]({filename_prefix}summary.json).", ""]
+    (output / f"{filename_prefix}results.md").write_text("\n".join(report))
