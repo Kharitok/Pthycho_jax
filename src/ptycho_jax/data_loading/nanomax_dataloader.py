@@ -5,6 +5,7 @@ coordinates; scan limits use the original (sx, sy) motor coordinates and units.
 See nanomax_data_loading.md for the processing order and pipeline integration.
 """
 
+import re
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -59,7 +60,9 @@ class H5DataLoader:
 class NanoMaxDataset:
     """Raw NanoMAX data with externally supplied geometry in metres.
 
-    Override the dataset path class attributes in a subclass for another layout.
+    detector_name selects /entry/measurement/<name>/frames. HDF5 external links
+    are followed automatically, keeping motors/energy in the scan file. Omit
+    the name to retain the class path (eiger4m by default) or subclass layout.
     Raw properties return in-memory arrays; detector_mask reads only frame zero.
     """
 
@@ -74,13 +77,26 @@ class NanoMaxDataset:
         detector_distance: float,
         detector_pixel_size: float,
         defocus: float,
+        *,
+        detector_name: str | None = None,
     ) -> None:
         self.datapath = Path(datapath)
+        if detector_name is not None:
+            self.detector_path = self.detector_path_for_name(detector_name)
+        path_parts = self.detector_path.strip("/").split("/")
+        self.detector_name = detector_name or (path_parts[-2] if len(path_parts) > 1 else None)
         self.detector_distance = _positive_scalar(detector_distance, "detector_distance")
         self.detector_pixel_size = _positive_scalar(detector_pixel_size, "detector_pixel_size")
         if not np.isscalar(defocus) or not np.isfinite(defocus):
             raise ValueError("defocus must be a finite scalar in metres.")
         self.defocus = float(defocus)
+
+    @staticmethod
+    def detector_path_for_name(name: str) -> str:
+        """Validate a detector key, without accepting arbitrary HDF5 paths."""
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+            raise ValueError("detector_name must contain letters, digits, underscores or hyphens.")
+        return f"/entry/measurement/{name}/frames"
 
     def __getitem__(self, key: str):
         with H5DataLoader(self.datapath) as loader:
@@ -236,6 +252,14 @@ def prepare_nanomax_data(
         if frames.ndim != 3 or any(size == 0 for size in frames.shape):
             raise ValueError("Detector frames must have nonempty shape (frames, rows, columns).")
         detector_shape = frames.shape[-2:]
+        detector_source = {
+            "name": dataset.detector_name,
+            "scan_file": str(dataset.datapath.resolve()),
+            "scan_dataset": dataset.detector_path,
+            "data_file": str(Path(frames.file.filename).resolve()),
+            "data_dataset": frames.name,
+            "shape": list(frames.shape),
+        }
         x = loader.read_dataset(dataset.scan_x_path)
         y = loader.read_dataset(dataset.scan_y_path)
         if x.shape != (len(frames),) or y.shape != (len(frames),):
@@ -341,6 +365,7 @@ def prepare_nanomax_data(
         "frame_indices": frame_indices[order],
         "crop_slices": slices,
         "detector_center": center,
+        "detector_source": detector_source,
         "experimental_parameters": {
             "detector_pixel_size_m": dataset.detector_pixel_size,
             "pixel_number": pixel_number,

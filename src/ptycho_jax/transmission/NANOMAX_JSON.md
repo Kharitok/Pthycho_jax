@@ -46,6 +46,7 @@ enabled settings in the example. All physical lengths use metres unless noted.
 | JSON key | Type and default | Meaning |
 | --- | --- | --- |
 | `datapath` | string; local scan `.../NanoMax/Test_reconstruction/download_data/09_kev/raw/0001_setup/000082.h5` | NanoMAX raw HDF5 scan. The example contains the full local path; supply your own path on another machine. |
+| `detector_name` | string; `"eiger4m"` | Detector group under `/entry/measurement/<name>/frames`. Use `"eiger1m"` for EH2 scan 000005. HDF5 external links are followed to the detector file automatically; motors and energy still come from `datapath`. |
 | `output_dir` | string; `"results/nanomax"` | Parent directory for a new `scan_<scan>_<UTC timestamp>_<tag>` folder. Existing run folders are rejected. |
 | `tag` | string or `null`; five random ASCII letters | Run label shared by every artifact filename. Spaces become underscores in paths. Omit or use `null` for a new random label. |
 | `device` | `"gpu"`, `"cpu"` or `null`; `null` | JAX execution backend. `null` selects JAX's default available device. |

@@ -14,6 +14,11 @@ PYTHONPATH=src .venv/bin/python src/pipeline_nanomax_upd_v2.py \
 See the [JSON parameter reference](NANOMAX_JSON.md) for every field, schedule
 examples, disabling constraints, path rules and CLI overrides.
 
+Use `--detector-name eiger1m` (JSON `"detector_name": "eiger1m"`) to select
+`/entry/measurement/eiger1m/frames`; HDF5 follows external detector-file links.
+Eiger4M remains the default. EH2 scan 000005 has a separate configuration in
+`configs/nanomax_eh2_000005.json`, using its 3.635 m distance and 1.0 mm defocus.
+
 ```bash
 # Five-mode, 400-update AD with scheduled TV/support and full diagnostics.
 PYTHONPATH=src .venv/bin/python src/pipeline_nanomax_upd_v2.py \

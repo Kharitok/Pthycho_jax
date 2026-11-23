@@ -79,8 +79,10 @@ class ReconstructionConfig:
     weights_learning_rate: float = 0.003
     positions_learning_rate: float = 0.003
     seed: int = 0
+    detector_name: str = "eiger4m"
 
     def __post_init__(self):
+        NanoMaxDataset.detector_path_for_name(self.detector_name)
         if self.n_steps < 1 or self.batch_size < 1:
             raise ValueError("n_steps and batch_size must be positive.")
         if not 1 < self.max_correction_magnitude < self.shift_margin:
@@ -100,6 +102,7 @@ def load_reconstruction_data(config: ReconstructionConfig) -> dict:
         config.detector_distance_m,
         config.detector_pixel_size_m,
         config.defocus_m,
+        detector_name=config.detector_name,
     )
     data = prepare_nanomax_data(
         dataset,

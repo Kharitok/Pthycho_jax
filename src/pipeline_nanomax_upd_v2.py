@@ -360,6 +360,7 @@ def run_reconstruction(
         "custom_projection": _callback_name(projection_fn),
         "probe_support": support_info,
         "geometry": state["geometry"],
+        "detector_source": data.get("detector_source"),
         "sample_pixel_size_m": data["reconstruction_pix_size"],
         "object_shape": np.asarray(params["sample"].shape),
         "detector_center_raw": data["detector_center"],
@@ -495,6 +496,7 @@ def save_run_report(data, config, metrics):
         "",
         f"Tag: `{config.tag}`; reconstruction started (UTC): {config.started_utc}.",
         f"Input: `{config.datapath}`; {len(data['total_ints'])} retained frames; crop {config.crop_shape}.",
+        f"Detector: `{config.detector_name}` via `/entry/measurement/{config.detector_name}/frames`; resolved detector source is recorded in metrics.",
         (
             f"Energy: {geometry['energy_eV']:.6f} eV; wavelength: {geometry['wavelength_m']:.12g} m; "
             f"detector distance: {geometry['sample_detector_distance_m']:.6f} m; "
@@ -703,6 +705,11 @@ def parse_configuration(argv=None):
         help="JSON settings file; explicit CLI arguments override its values.",
     )
     parser.add_argument("--datapath", type=Path, default=base.DEFAULT_DATAPATH)
+    parser.add_argument(
+        "--detector-name",
+        default="eiger4m",
+        help="Scan HDF5 detector group; external frame-file links are followed automatically.",
+    )
     parser.add_argument(
         "--output-dir",
         type=Path,
