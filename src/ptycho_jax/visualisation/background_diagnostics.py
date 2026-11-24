@@ -8,7 +8,7 @@ def save_background_figures(
     components, data, final, folder, filename_prefix, max_fraction
 ):
     mask = np.asarray(data["detector_mask"])
-    mean_bg = components["map"]
+    mean_bg = components["mean_observed_map"]
     signal = np.maximum(final["mean_prediction"] - mean_bg, 0)
     fraction = mean_bg / np.maximum(final["mean_prediction"], 1e-20)
     fig, axes = plt.subplots(1, 3, figsize=(14, 4), layout="constrained")
@@ -58,7 +58,7 @@ def save_background_figures(
     )
     axes[1].plot(
         shots,
-        100 * (components["frame_counts"] / final["predicted_totals"])[order],
+        100 * (components["observed_frame_counts"] / final["predicted_totals"])[order],
         label="Fraction of predicted photons",
     )
     axes[1].axhline(

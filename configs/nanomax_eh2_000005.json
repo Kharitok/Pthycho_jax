@@ -1,6 +1,7 @@
 {
   "datapath": "/gpfs/exfel/data/scratch/kkonstantin/Projects/NanoMax/Test_reconstruction/download_data/EH2/raw/0001_setup/000005.h5",
   "detector_name": "eiger1m",
+  "shot_specific_masks": true,
   "output_dir": "../results/nanomax_eh2",
   "tag": "eh2_stars_ad",
   "device": "gpu",

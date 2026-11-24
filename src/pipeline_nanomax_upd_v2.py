@@ -395,7 +395,8 @@ def run_reconstruction(
         )
         * config.max_correction_magnitude
     )
-    mean_measured = data["total_ints"].mean() / data["detector_mask"].sum()
+    active_mask = np.asarray(state["mask"])
+    mean_measured = data["total_ints"].mean() / active_mask.sum(axis=(-2, -1)).mean()
     metrics = {
         "run_id": config.run_id,
         "tag": config.tag,
@@ -446,6 +447,14 @@ def run_reconstruction(
         "detector_center_raw": data["detector_center"],
         "detector_crop_raw": [[s.start, s.stop] for s in data["crop_slices"]],
         "valid_detector_fraction": float(data["detector_mask"].mean()),
+        "shot_specific_masks": config.shot_specific_masks,
+        "mean_shot_valid_detector_fraction": float(active_mask.mean()),
+        "min_shot_valid_detector_fraction": float(
+            active_mask.mean(axis=(-2, -1)).min()
+        ),
+        "max_shot_valid_detector_fraction": float(
+            active_mask.mean(axis=(-2, -1)).max()
+        ),
         "device": str(params["sample"].device),
         "device_kind": params["sample"].device.device_kind,
         "jax_version": jax.__version__,
@@ -468,6 +477,8 @@ def run_reconstruction(
             "background_map": components["map"],
             "background_scales": components["scales"],
             "background_frame_counts": components["frame_counts"],
+            "background_observed_frame_counts": components["observed_frame_counts"],
+            "background_mean_observed_map": components["mean_observed_map"],
             "background_fractions": components["fractions"],
             "initial_background_map": initial_components["map"],
             "initial_background_scale_logits": np.asarray(
@@ -525,6 +536,9 @@ def run_reconstruction(
         initial_configured_regularization=initial_configured_reg,
         final_configured_regularization=final_configured_reg,
         detector_mask=data["detector_mask"],
+        shot_masks=np.empty((0, *data["detector_mask"].shape), dtype=bool)
+        if data.get("shot_masks") is None
+        else data["shot_masks"],
         total_ints=data["total_ints"],
         illumination_coverage=coverage,
         sample_pixel_size_m=data["reconstruction_pix_size"],
@@ -612,6 +626,7 @@ def save_run_report(data, config, metrics):
         f"Tag: `{config.tag}`; reconstruction started (UTC): {config.started_utc}.",
         f"Input: `{config.datapath}`; {len(data['total_ints'])} retained frames; crop {config.crop_shape}.",
         f"Detector: `{config.detector_name}` via `/entry/measurement/{config.detector_name}/frames`; resolved detector source is recorded in metrics.",
+        f"Shot-specific detector masks: {config.shot_specific_masks}. When enabled, each frame uses its own finite/nonnegative/below-frame-maximum mask; saved shot_masks follow frame_indices. detector_mask is only their 2D union.",
         (
             f"Energy: {geometry['energy_eV']:.6f} eV; wavelength: {geometry['wavelength_m']:.12g} m; "
             f"detector distance: {geometry['sample_detector_distance_m']:.6f} m; "
@@ -877,6 +892,12 @@ def parse_configuration(argv=None):
     parser.add_argument("--batch-size", type=int, default=13)
     parser.add_argument("--crop-shape", type=int, nargs=2, default=[512, 512])
     parser.add_argument("--crop-center", type=float, nargs=2)
+    parser.add_argument(
+        "--shot-specific-masks",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Estimate the existing high-value exclusion mask independently for every full raw frame; otherwise reuse frame zero's mask.",
+    )
     parser.add_argument("--detector-distance-m", type=float, default=7.180)
     parser.add_argument("--detector-pixel-size-m", type=float, default=75e-6)
     parser.add_argument("--defocus-m", type=float, default=1500e-6)

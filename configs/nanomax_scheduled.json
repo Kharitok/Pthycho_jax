@@ -1,6 +1,7 @@
 {
   "datapath": "/gpfs/exfel/data/scratch/kkonstantin/Projects/NanoMax/Test_reconstruction/download_data/09_kev/raw/0001_setup/000082.h5",
   "detector_name": "eiger4m",
+  "shot_specific_masks": true,
   "output_dir": "../results/nanomax",
   "tag": "json_settings_test",
   "device": "gpu",

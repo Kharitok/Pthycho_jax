@@ -29,10 +29,11 @@ import numpy as np
 
 from ptycho_jax.data_loading.nanomax_dataloader import (
     NanoMaxDataset,
+    mean_valid_intensity,
     prepare_nanomax_data,
 )
 from ptycho_jax.transmission.background import (
-    background_frame_counts,
+    background_observed_counts,
     initialize_background,
 )
 from ptycho_jax.transmission.loss_and_reg import (
@@ -85,9 +86,12 @@ class ReconstructionConfig:
     positions_learning_rate: float = 0.003
     seed: int = 0
     detector_name: str = "eiger4m"
+    shot_specific_masks: bool = False
 
     def __post_init__(self):
         NanoMaxDataset.detector_path_for_name(self.detector_name)
+        if type(self.shot_specific_masks) is not bool:
+            raise ValueError("shot_specific_masks must be a boolean.")
         if self.n_steps < 1 or self.batch_size < 1:
             raise ValueError("n_steps and batch_size must be positive.")
         if not 1 < self.max_correction_magnitude < self.shift_margin:
@@ -119,6 +123,7 @@ def load_reconstruction_data(config: ReconstructionConfig) -> dict:
         fft_shift=False,
         scan_coord_limits=config.scan_coord_limits,
         intensity_limits=config.intensity_limits,
+        shot_specific_masks=config.shot_specific_masks,
     )
     if config.max_positions is not None:
         for key in (
@@ -127,10 +132,18 @@ def load_reconstruction_data(config: ReconstructionConfig) -> dict:
             "total_ints",
             "position_id",
             "frame_indices",
+            "shot_masks",
         ):
-            data[key] = data[key][: config.max_positions]
+            if data[key] is not None:
+                data[key] = data[key][: config.max_positions]
         _, first = np.unique(data["position_id"], return_index=True)
-        data["mean_image"] = data["measured_intensities"][first].mean(axis=0)
+        if data["shot_masks"] is not None:
+            data["detector_mask"] = data["shot_masks"].any(axis=0)
+            data["mean_image"] = mean_valid_intensity(
+                data["measured_intensities"][first], data["shot_masks"][first]
+            )
+        else:
+            data["mean_image"] = data["measured_intensities"][first].mean(axis=0)
         data["mean_probe"] = data["mean_image"].copy()
     if config.flip_detector_rows:
         for key in (
@@ -140,6 +153,7 @@ def load_reconstruction_data(config: ReconstructionConfig) -> dict:
             "mask",
             "precise_mask",
             "detector_mask",
+            "shot_masks",
         ):
             if data[key] is not None:
                 data[key] = np.flip(data[key], axis=-2).copy()
@@ -161,6 +175,7 @@ def load_reconstruction_data(config: ReconstructionConfig) -> dict:
         "mask",
         "precise_mask",
         "detector_mask",
+        "shot_masks",
     ):
         if data[key] is not None:
             data[key] = np.fft.ifftshift(data[key], axes=(-2, -1))
@@ -244,6 +259,7 @@ def initialize_reconstruction(
             config.background_grid_shape,
             config.background_initial_fraction,
             config.background_max_fraction,
+            shot_masks=data.get("shot_masks"),
         )
         params.update(background_params)
         fixed.update(background_fixed)
@@ -269,14 +285,19 @@ def initialize_reconstruction(
         predicted = np.asarray(
             predict_batch(params, fixed, jnp.arange(start, stop, dtype=jnp.int32))
         )
+        batch_mask = (
+            data["detector_mask"]
+            if data.get("shot_masks") is None
+            else data["shot_masks"][start:stop]
+        )
         predicted_totals.extend(
-            predicted[:, data["detector_mask"]].sum(axis=1, dtype=float)
+            np.sum(np.where(batch_mask, predicted, 0), axis=(-2, -1), dtype=float)
         )
     predicted_totals = np.asarray(predicted_totals)
     if not np.isfinite(predicted_totals).all() or np.any(predicted_totals <= 0):
         raise ValueError("Initial forward model has invalid frame energies.")
     background_counts = (
-        np.asarray(background_frame_counts(params, fixed), dtype=float)
+        np.asarray(background_observed_counts(params, fixed), dtype=float)
         if background_enabled
         else 0.0
     )
@@ -296,7 +317,12 @@ def initialize_reconstruction(
         "fixed": fixed,
         "models": models,
         "predict_batch": predict_batch,
-        "mask": jnp.asarray(data["detector_mask"], dtype=bool),
+        "mask": jnp.asarray(
+            data["detector_mask"]
+            if data.get("shot_masks") is None
+            else data["shot_masks"],
+            dtype=bool,
+        ),
         "root_measured": np.sqrt(data["measured_intensities"]),
         "probe_intensity": probe_intensity,
         "probe_pixel_size_m": probe_pixel,
@@ -314,7 +340,7 @@ def evaluate_reconstruction(params, fixed, state: dict, batch_size: int) -> dict
     root = state["root_measured"]
     mask = np.asarray(state["mask"])
     frame_losses, predicted_totals = [], []
-    mean_prediction = np.zeros(mask.shape, dtype=np.float64)
+    mean_prediction = np.zeros(root.shape[-2:], dtype=np.float64)
     first_prediction = None
     for start in range(0, len(root), batch_size):
         stop = min(start + batch_size, len(root))
@@ -324,9 +350,20 @@ def evaluate_reconstruction(params, fixed, state: dict, batch_size: int) -> dict
         if not np.isfinite(prediction).all():
             raise FloatingPointError("Nonfinite reconstructed intensity.")
         residual = np.sqrt(np.maximum(prediction, 0)) - root[start:stop]
-        frame_losses.extend(np.mean(residual[:, mask] ** 2, axis=1, dtype=np.float64))
-        predicted_totals.extend(prediction[:, mask].sum(axis=1, dtype=np.float64))
-        mean_prediction += prediction.sum(axis=0, dtype=np.float64)
+        batch_mask = mask[start:stop] if mask.ndim == 3 else mask
+        valid_counts = np.broadcast_to(batch_mask, prediction.shape).sum(axis=(-2, -1))
+        frame_losses.extend(
+            np.sum(
+                np.where(batch_mask, residual**2, 0), axis=(-2, -1), dtype=np.float64
+            )
+            / valid_counts
+        )
+        predicted_totals.extend(
+            np.sum(np.where(batch_mask, prediction, 0), axis=(-2, -1), dtype=np.float64)
+        )
+        mean_prediction += np.where(batch_mask, prediction, 0).sum(
+            axis=0, dtype=np.float64
+        )
         if first_prediction is None:
             first_prediction = prediction[0]
     return {
@@ -379,7 +416,20 @@ def save_preparation_figure(data: dict, output: Path, filename_prefix: str = "")
         fig.colorbar(ax.imshow(np.log10(1 + value), cmap="magma"), ax=ax)
         ax.set_title(title)
     axes[0, 2].imshow(np.fft.fftshift(data["detector_mask"]), cmap="gray")
-    axes[0, 2].set_title("Valid detector mask after orientation")
+    if data.get("shot_masks") is not None:
+        axes[0, 2].clear()
+        fig.colorbar(
+            axes[0, 2].imshow(
+                np.fft.fftshift(data["shot_masks"].mean(axis=0)),
+                cmap="gray",
+                vmin=0,
+                vmax=1,
+            ),
+            ax=axes[0, 2],
+        )
+        axes[0, 2].set_title("Fraction of shots valid at each detector pixel")
+    else:
+        axes[0, 2].set_title("Valid detector mask after orientation")
     axes[1, 1].imshow(
         np.log10(1 + np.fft.fftshift(data["measured_intensities"][0])), cmap="magma"
     )
@@ -524,7 +574,10 @@ def _save_reconstruction_figures(
     ]
     for i, (ax, image, title) in enumerate(zip(axes.flat, images, titles)):
         value = image if i == 5 else np.log10(1 + image)
-        value = np.where(data["detector_mask"], value, np.nan)
+        display_mask = data["detector_mask"]
+        if i in (0, 1, 2, 5) and data.get("shot_masks") is not None:
+            display_mask = data["shot_masks"][0]
+        value = np.where(display_mask, value, np.nan)
         artist = ax.imshow(np.fft.fftshift(value), cmap="magma")
         ax.set_title(title + ("" if i == 5 else " [log10(1+I)]"))
         fig.colorbar(artist, ax=ax, shrink=0.8)
@@ -586,7 +639,9 @@ def run_reconstruction(data: dict, config: ReconstructionConfig, n_modes: int) -
         )
         * config.max_correction_magnitude
     )
-    mean_measured = data["total_ints"].mean() / data["detector_mask"].sum()
+    active_mask = np.asarray(state["mask"])
+    mean_valid_count = active_mask.sum(axis=(-2, -1)).mean()
+    mean_measured = data["total_ints"].mean() / mean_valid_count
     metrics = {
         "modes": n_modes,
         "positions": len(data["total_ints"]),
@@ -609,6 +664,8 @@ def run_reconstruction(data: dict, config: ReconstructionConfig, n_modes: int) -
         "detector_center_raw": data["detector_center"],
         "detector_crop_raw": [[s.start, s.stop] for s in data["crop_slices"]],
         "valid_detector_fraction": float(data["detector_mask"].mean()),
+        "shot_specific_masks": config.shot_specific_masks,
+        "mean_shot_valid_detector_fraction": float(active_mask.mean()),
         "device": str(params["sample"].device),
         "device_kind": params["sample"].device.device_kind,
         "jax_version": jax.__version__,
@@ -630,6 +687,9 @@ def run_reconstruction(data: dict, config: ReconstructionConfig, n_modes: int) -
         object_pixel_origin=state["object_pixel_origin"],
         loss_history=history,
         detector_mask=data["detector_mask"],
+        shot_masks=np.empty((0, *data["detector_mask"].shape), dtype=bool)
+        if data.get("shot_masks") is None
+        else data["shot_masks"],
         total_ints=data["total_ints"],
         illumination_coverage=coverage,
         sample_pixel_size_m=data["reconstruction_pix_size"],
@@ -753,6 +813,9 @@ def main(argv=None):
     parser.add_argument("--batch-size", type=int, default=13)
     parser.add_argument("--crop-shape", type=int, nargs=2, default=[512, 512])
     parser.add_argument("--crop-center", type=float, nargs=2)
+    parser.add_argument(
+        "--shot-specific-masks", action=argparse.BooleanOptionalAction, default=False
+    )
     parser.add_argument("--detector-distance-m", type=float, default=7.180)
     parser.add_argument("--detector-pixel-size-m", type=float, default=75e-6)
     parser.add_argument("--defocus-m", type=float, default=1500e-6)
@@ -785,6 +848,7 @@ def main(argv=None):
         defocus_m=args.defocus_m,
         crop_shape=tuple(args.crop_shape),
         crop_center=None if args.crop_center is None else tuple(args.crop_center),
+        shot_specific_masks=args.shot_specific_masks,
         scan_coords_unit=args.scan_coords_unit,
         energy_unit=args.energy_unit,
         motor_x_sign=args.motor_x_sign,

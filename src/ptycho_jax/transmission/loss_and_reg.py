@@ -11,6 +11,7 @@ from jaxtyping import Array, Float, Int32
 
 from ptycho_jax.transmission.background import (
     background_frame_counts,
+    background_observed_counts,
     background_probability,
 )
 
@@ -109,6 +110,8 @@ def join_loss_and_forward_batched(
 
     The returned function expects `pos_index` and `measured_intensity` to share the
     leading batch dimension, then computes the mean of the per-position losses.
+    `mask` is either a shared detector image or the full shot-mask pool, indexed
+    by pos_index here so shuffling and partial batches retain mask alignment.
     """
 
     single_loss = join_loss_and_forward(loss_func, forward_func)
@@ -120,12 +123,16 @@ def join_loss_and_forward_batched(
         measured_intensity: Array,
         mask: Array,
     ) -> Float:
-        losses = jax.vmap(single_loss, in_axes=(None, None, 0, 0, None))(
+        per_shot = mask.ndim == measured_intensity.ndim
+        batch_mask = mask[pos_index] if per_shot else mask
+        losses = jax.vmap(
+            single_loss, in_axes=(None, None, 0, 0, 0 if per_shot else None)
+        )(
             optimizable_params,
             fixed_params,
             pos_index,
             measured_intensity,
-            mask,
+            batch_mask,
         )
         return jnp.mean(losses)
 
@@ -312,6 +319,10 @@ def create_background_regularizer(
         mask = fixed["background_mask"]
         count = jnp.sum(mask)
         mean_counts = jnp.mean(background_frame_counts(params, fixed)) / count
+        if "background_shot_masks" in fixed:
+            mean_counts = jnp.sum(background_observed_counts(params, fixed)) / jnp.sum(
+                fixed["background_shot_masks"]
+            )
         density = jnp.fft.fftshift(background_probability(params, fixed)) * count
         centered_mask = jnp.fft.fftshift(mask)
         dx = jnp.diff(density, axis=-1)

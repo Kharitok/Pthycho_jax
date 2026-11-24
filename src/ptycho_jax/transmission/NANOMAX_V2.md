@@ -19,6 +19,15 @@ Use `--detector-name eiger1m` (JSON `"detector_name": "eiger1m"`) to select
 Eiger4M remains the default. EH2 scan 000005 has a separate configuration in
 `configs/nanomax_eh2_000005.json`, using its 3.635 m distance and 1.0 mm defocus.
 
+The maintained JSON examples enable `"shot_specific_masks": true`. Each full
+raw exposure gets its own finite/nonnegative/below-frame-maximum validity mask,
+which follows that shot into the loss, photon totals and background audits.
+Use `false` or `--no-shot-specific-masks` for the legacy first-frame shared mask;
+the script default remains false. Saved `shot_masks` is aligned with
+`frame_indices`, while `detector_mask` is a 2D union for shared support/display.
+See the [mask explanation](NANOMAX_JSON.md#shot-specific-detector-masks) for the
+maximum-value heuristic, ordering and saved-array conventions.
+
 Reconstruction and diagnostic probe panels label every image with physical
 `x (µm)` / `y (µm)` axes and state the full x/y field of view. This is the
 array extent, not a beam waist; calibrated beam widths remain in diagnostics.

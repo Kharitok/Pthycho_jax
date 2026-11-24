@@ -153,6 +153,13 @@ def _clean_image(frame: np.ndarray, mask: np.ndarray, dtype) -> np.ndarray:
     return clean
 
 
+def mean_valid_intensity(images: np.ndarray, masks: np.ndarray) -> np.ndarray:
+    """Mean at each pixel over only the shots that observed that pixel."""
+    counts = np.broadcast_to(masks, images.shape).sum(axis=0)
+    total = np.where(masks, images, 0).sum(axis=0, dtype=np.float64)
+    return np.divide(total, counts, out=np.zeros_like(total), where=counts > 0)
+
+
 def _within_limits(values: np.ndarray, limits, name: str) -> np.ndarray:
     bounds = np.asarray(limits, dtype=float)
     if bounds.shape != (2,) or np.isnan(bounds).any() or bounds[0] > bounds[1]:
@@ -198,6 +205,7 @@ def prepare_nanomax_data(
     intensity_limits: tuple[float, float] | None = None,
     mask: np.ndarray | None = None,
     precise_mask: np.ndarray | None = None,
+    shot_specific_masks: bool = False,
     probe_image: np.ndarray | None = None,
     crop_shape: tuple[int, int] | None = None,
     crop_center: tuple[float, float] | None = None,
@@ -213,7 +221,11 @@ def prepare_nanomax_data(
 
     scan_coord_limits uses keys '0'/'1' for original sx/sy and inclusive limits
     in motor units. intensity_limits applies to cleaned, masked, cropped totals.
-    mask replaces the first-frame maximum heuristic; precise_mask intersects it.
+    With shot_specific_masks=False, mask replaces the first-frame maximum
+    heuristic; precise_mask intersects it. With True, each full raw frame gets
+    the same finite/nonnegative/below-frame-maximum heuristic, intersected with
+    any supplied static masks. shot_masks follows the retained frame order;
+    detector_mask is its 2D union for display and shared probe initialization.
     Masks and probe_image must have full detector shape and detector orientation.
     dtype must be float32 or a wider floating-point type to retain photon counts.
 
@@ -233,6 +245,8 @@ def prepare_nanomax_data(
     Arrays are centered unless fft_shift=True; mean_probe always stays centered.
     """
     scan_coords_unit = _positive_scalar(scan_coords_unit, "scan_coords_unit")
+    if type(shot_specific_masks) is not bool:
+        raise ValueError("shot_specific_masks must be a boolean.")
     energy_unit = _positive_scalar(energy_unit, "energy_unit")
     if tuple(scan_axis_order) not in ((0, 1), (1, 0)):
         raise ValueError("scan_axis_order must be (0, 1) or (1, 0).")
@@ -281,10 +295,12 @@ def prepare_nanomax_data(
         if not frame_indices.size:
             raise ValueError("No frames remain after scan coordinate filtering.")
 
-        full_mask = (
-            _first_frame_mask(loader.read_dataset(dataset.detector_path, 0))
-            if mask is None else _detector_image(mask, detector_shape, "mask", boolean=True)
-        )
+        if mask is not None:
+            full_mask = _detector_image(mask, detector_shape, "mask", boolean=True)
+        elif shot_specific_masks:
+            full_mask = np.ones(detector_shape, dtype=bool)
+        else:
+            full_mask = _first_frame_mask(loader.read_dataset(dataset.detector_path, 0))
         full_precise = None if precise_mask is None else _detector_image(
             precise_mask, detector_shape, "precise_mask", boolean=True,
         )
@@ -306,11 +322,17 @@ def prepare_nanomax_data(
                 raise ValueError("crop_shape must be two positive integers within detector shape.")
             if crop_center is None:
                 mean = np.zeros(detector_shape, dtype=np.float64)
+                observations = np.zeros(detector_shape, dtype=np.int64) if shot_specific_masks else None
                 for index in frame_indices:
-                    mean += _clean_image(
-                        loader.read_dataset(dataset.detector_path, int(index)), combined_mask, dtype,
-                    )
-                mean /= len(frame_indices)
+                    raw = loader.read_dataset(dataset.detector_path, int(index))
+                    valid = combined_mask & _first_frame_mask(raw) if shot_specific_masks else combined_mask
+                    mean += _clean_image(raw, valid, dtype)
+                    if observations is not None:
+                        observations += valid
+                if observations is None:
+                    mean /= len(frame_indices)
+                else:
+                    np.divide(mean, observations, out=mean, where=observations > 0)
                 center = _estimate_center(mean, center_refinement_radius, center_relative_threshold)
             else:
                 center = np.asarray(crop_center, dtype=float)
@@ -322,11 +344,19 @@ def prepare_nanomax_data(
         if not cropped_mask.any():
             raise ValueError("The detector crop contains no valid mask pixels.")
         measured = np.empty((len(frame_indices), *cropped_mask.shape), dtype=dtype)
+        shot_masks = np.empty(measured.shape, dtype=bool) if shot_specific_masks else None
         for output_index, frame_index in enumerate(frame_indices):
-            selection = (int(frame_index), *slices)
-            measured[output_index] = _clean_image(
-                loader.read_dataset(dataset.detector_path, selection), cropped_mask, dtype,
-            )
+            if shot_masks is None:
+                raw = loader.read_dataset(dataset.detector_path, (int(frame_index), *slices))
+                valid = cropped_mask
+            else:
+                full_raw = loader.read_dataset(dataset.detector_path, int(frame_index))
+                valid = _first_frame_mask(full_raw)[slices] & cropped_mask
+                if not valid.any():
+                    raise ValueError(f"Frame {frame_index} has no valid pixels in the detector crop.")
+                shot_masks[output_index] = valid
+                raw = full_raw[slices]
+            measured[output_index] = _clean_image(raw, valid, dtype)
 
     totals = measured.sum(axis=(-2, -1), dtype=np.float64)
     if intensity_limits is not None:
@@ -334,13 +364,20 @@ def prepare_nanomax_data(
         frame_indices = frame_indices[valid_intensity]
         measured = measured[valid_intensity]
         totals = totals[valid_intensity]
+        if shot_masks is not None:
+            shot_masks = shot_masks[valid_intensity]
     if not len(frame_indices):
         raise ValueError("No frames remain after intensity filtering.")
     coords = coords[frame_indices]
     unique, position_id = np.unique(coords, axis=0, return_inverse=True)
     order = _repeat_order(position_id, totals)
     measured = measured[order]
-    mean_image = measured[:len(unique)].mean(axis=0)
+    if shot_masks is not None:
+        shot_masks = shot_masks[order]
+        cropped_mask = shot_masks.any(axis=0)
+        mean_image = mean_valid_intensity(measured[:len(unique)], shot_masks[:len(unique)])
+    else:
+        mean_image = measured[:len(unique)].mean(axis=0)
     mean_probe = mean_image.copy() if full_probe is None else _clean_image(
         full_probe[slices], cropped_mask, dtype,
     )
@@ -362,6 +399,7 @@ def prepare_nanomax_data(
         "mask": full_mask[slices],
         "precise_mask": None if full_precise is None else full_precise[slices],
         "detector_mask": cropped_mask,
+        "shot_masks": shot_masks,
         "frame_indices": frame_indices[order],
         "crop_slices": slices,
         "detector_center": center,
@@ -381,7 +419,7 @@ def prepare_nanomax_data(
         "sample_size_pix": (minimum_size * 1.2).astype(np.int64),
     }
     if fft_shift:
-        for key in ("measured_intensities", "mean_image", "mask", "precise_mask", "detector_mask"):
+        for key in ("measured_intensities", "mean_image", "mask", "precise_mask", "detector_mask", "shot_masks"):
             if result[key] is not None:
                 result[key] = np.fft.ifftshift(result[key], axes=(-2, -1))
     return result

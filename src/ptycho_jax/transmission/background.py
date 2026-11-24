@@ -1,7 +1,8 @@
 """One nonnegative detector background shape with a bounded level per frame.
 
-The shared probability image sums to one on valid detector pixels. A frame's
-background photon count is its measured total times a bounded fitted fraction.
+The shared probability image sums to one on the union of valid detector pixels.
+A frame's full-map background count is its measured valid-pixel total times a
+bounded fitted fraction; observed background counts can be lower with shot masks.
 Thus the map/scale ambiguity is removed and a photon budget is enforced by
 parameterization, independently of optional post-update projections.
 """
@@ -12,7 +13,13 @@ import numpy as np
 
 
 def initialize_background(
-    mask, frame_totals, grid_shape=(16, 16), initial_fraction=1e-4, max_fraction=0.05
+    mask,
+    frame_totals,
+    grid_shape=(16, 16),
+    initial_fraction=1e-4,
+    max_fraction=0.05,
+    *,
+    shot_masks=None,
 ):
     """Return real optimizer leaves and fixed data; coarse logits are centered."""
     mask = np.asarray(mask, dtype=bool)
@@ -34,14 +41,26 @@ def initialize_background(
         )
     ratio = initial_fraction / max_fraction
     logit = np.log(ratio) - np.log1p(-ratio)
-    return {
-        "background_logits": jnp.zeros(tuple(grid_shape), dtype=jnp.float32),
-        "background_scale_logits": jnp.full(totals.shape, logit, dtype=jnp.float32),
-    }, {
+    fixed = {
         "background_mask": jnp.asarray(mask),
         "background_frame_totals": jnp.asarray(totals, dtype=jnp.float32),
         "background_max_fraction": jnp.asarray(max_fraction, dtype=jnp.float32),
     }
+    if shot_masks is not None:
+        shot_masks = np.asarray(shot_masks, dtype=bool)
+        if (
+            shot_masks.shape != (len(totals), *mask.shape)
+            or not shot_masks.any(axis=(-2, -1)).all()
+            or np.any(shot_masks & ~mask)
+        ):
+            raise ValueError(
+                "Background shot masks must match frames and lie within the shared mask."
+            )
+        fixed["background_shot_masks"] = jnp.asarray(shot_masks)
+    return {
+        "background_logits": jnp.zeros(tuple(grid_shape), dtype=jnp.float32),
+        "background_scale_logits": jnp.full(totals.shape, logit, dtype=jnp.float32),
+    }, fixed
 
 
 def background_probability(params, fixed):
@@ -61,7 +80,7 @@ def background_probability(params, fixed):
 
 
 def background_fractions(params, fixed):
-    """Fraction of measured valid-pixel photons assigned to each background."""
+    """Full-map budget fractions relative to measured valid-pixel photons."""
     return fixed["background_max_fraction"] * jax.nn.sigmoid(
         params["background_scale_logits"]
     )
@@ -69,6 +88,23 @@ def background_fractions(params, fixed):
 
 def background_frame_counts(params, fixed):
     return fixed["background_frame_totals"] * background_fractions(params, fixed)
+
+
+def background_observed_counts(params, fixed):
+    """Background photons on each shot's valid pixels, within its photon cap.
+
+    Keep one shared image: the shape is never renormalized independently per
+    shot. Its full-union photon budget therefore also bounds observed photons.
+    """
+    counts = background_frame_counts(params, fixed)
+    if "background_shot_masks" not in fixed:
+        return counts
+    mass = jnp.einsum(
+        "nyx,yx->n",
+        fixed["background_shot_masks"],
+        background_probability(params, fixed),
+    )
+    return counts * mass
 
 
 def shared_scaled_background(params, fixed, pos_index):
@@ -86,13 +122,28 @@ def background_components(params, fixed):
     """
     probability = np.asarray(background_probability(params, fixed))
     counts = np.asarray(background_frame_counts(params, fixed))
+    observed_counts = np.asarray(background_observed_counts(params, fixed))
     mean = counts.mean(dtype=float)
+    mean_observed_map = probability * mean
+    if "background_shot_masks" in fixed:
+        mean_observed_map = (
+            probability
+            * np.einsum(
+                "n,nyx->yx",
+                counts,
+                np.asarray(fixed["background_shot_masks"]),
+                dtype=np.float64,
+            )
+            / len(counts)
+        )
     return {
         "map": probability * mean,
         "scales": counts / mean if mean > 0 else np.ones_like(counts),
         "frame_counts": counts,
         "probability": probability,
-        "fractions": np.asarray(background_fractions(params, fixed)),
+        "observed_frame_counts": observed_counts,
+        "mean_observed_map": mean_observed_map,
+        "fractions": observed_counts / np.asarray(fixed["background_frame_totals"]),
     }
 
 
@@ -100,11 +151,11 @@ def audit_background(params, fixed, measured_mean, prediction_mean, prediction_t
     """Measure photon fractions and bright-region leakage, without hiding pixels."""
     components = background_components(params, fixed)
     mask = np.asarray(fixed["background_mask"])
-    counts = components["frame_counts"].astype(float)
+    counts = components["observed_frame_counts"].astype(float)
     total_measured = np.asarray(fixed["background_frame_totals"], dtype=float)
     prediction_totals = np.asarray(prediction_totals, dtype=float)
     bright = mask & (measured_mean >= np.percentile(measured_mean[mask], 90))
-    mean_bg = components["map"]
+    mean_bg = components["mean_observed_map"]
     mean_signal = prediction_mean - mean_bg
     bright_fraction = float(
         mean_bg[bright].sum(dtype=float)
@@ -125,12 +176,19 @@ def audit_background(params, fixed, measured_mean, prediction_mean, prediction_t
         ),
         "fraction_frames_near_budget": float(
             np.mean(
-                components["fractions"]
+                np.asarray(background_fractions(params, fixed))
                 >= 0.95 * float(fixed["background_max_fraction"])
             )
         ),
         "max_fraction_budget": float(fixed["background_max_fraction"]),
-        "mean_counts_per_valid_pixel": float(counts.mean() / mask.sum()),
+        "mean_counts_per_valid_pixel": float(
+            counts.sum()
+            / (
+                np.asarray(fixed["background_shot_masks"]).sum()
+                if "background_shot_masks" in fixed
+                else len(counts) * mask.sum()
+            )
+        ),
         "scale_min": float(components["scales"].min()),
         "scale_max": float(components["scales"].max()),
         "dominates_signal": bool(

@@ -47,6 +47,7 @@ enabled settings in the example. All physical lengths use metres unless noted.
 | --- | --- | --- |
 | `datapath` | string; local scan `.../NanoMax/Test_reconstruction/download_data/09_kev/raw/0001_setup/000082.h5` | NanoMAX raw HDF5 scan. The example contains the full local path; supply your own path on another machine. |
 | `detector_name` | string; `"eiger4m"` | Detector group under `/entry/measurement/<name>/frames`. Use `"eiger1m"` for EH2 scan 000005. HDF5 external links are followed to the detector file automatically; motors and energy still come from `datapath`. |
+| `shot_specific_masks` | boolean; `false` | Estimate the existing high-value exclusion mask independently for each full raw frame, then crop/orient it with that frame and use it in the loss. The maintained examples set this to `true`. `false` reuses the first-frame mask. See details below. |
 | `output_dir` | string; `"results/nanomax"` | Parent directory for a new `scan_<scan>_<UTC timestamp>_<tag>` folder. Existing run folders are rejected. |
 | `tag` | string or `null`; five random ASCII letters | Run label shared by every artifact filename. Spaces become underscores in paths. Omit or use `null` for a new random label. |
 | `device` | `"gpu"`, `"cpu"` or `null`; `null` | JAX execution backend. `null` selects JAX's default available device. |
@@ -68,6 +69,37 @@ enabled settings in the example. All physical lengths use metres unless noted.
 | `scan_coord_limits` | object or `null`; `null` | Inclusive limits in **original raw motor units**, before sign/orientation changes. Keys `"0"` and `"1"` mean sx and sy. Example: `{"0": [-1.0, 1.0], "1": [-2.0, 2.0]}`. Each pair must be finite and ordered; either axis may be omitted. |
 | `intensity_limits` | two numbers or `null`; `null` | Inclusive `[minimum, maximum]` cleaned/masked/cropped photon-total limits per frame. Pairs must be finite and ordered. `null` disables this filter. |
 | `max_positions` | positive integer or `null`; `null` | Retain at most this many frames in reconstruction order, after filtering. `null` uses all retained frames. Useful for a quick smoke test. |
+
+### Shot-specific detector masks
+
+Set `"shot_specific_masks": true` to give every exposure its own validity mask.
+The criterion is unchanged: a pixel is valid when its **raw full-frame** value
+is finite, nonnegative and strictly below that frame's largest finite value.
+All pixels tied at that maximum are excluded. This is a heuristic for the
+high-valued invalid/saturated-pixel sentinel: if a frame's maximum is genuine
+signal, those brightest pixels are excluded too. There is no new intensity
+threshold. A frame with no valid crop pixels raises an error.
+
+Masks remain aligned through coordinate/intensity filtering, repeat sorting,
+position limits, cropping, row flipping, FFT shifting and shuffled batches.
+Each shot's data loss is averaged over its own valid pixels; totals and initial
+probe-weight calibration use exactly those pixels. Automatic centering and
+probe-initialization means average each pixel over only the exposures where it
+is valid. Masks are fixed data, not optimized parameters.
+
+The saved `shot_masks` is a boolean `(frames, rows, columns)` array in
+reconstruction/FFT order, aligned with `frame_indices`; `True` means valid.
+`detector_mask` is its **2D union**, used for shared spatial support/display,
+not as a replacement for the per-shot loss masks. The preparation image shows
+the fraction of retained shots observing each detector pixel. Metrics record
+mean/min/max shot validity fractions. This adds one boolean crop per frame.
+
+Set `"shot_specific_masks": false`, or use `--no-shot-specific-masks`, to keep
+the legacy shared first-frame behavior. In this mode saved `shot_masks` has an
+empty leading dimension. CLI `--shot-specific-masks` enables the option and
+overrides JSON. Python callers may additionally supply static `mask` and
+`precise_mask` arrays: with shot masks enabled these intersect every shot's
+estimated mask; with the option disabled, explicit `mask` replaces the heuristic.
 
 ## Initialization and optimization
 
@@ -157,6 +189,18 @@ Saved physical arrays are `background_map` (mean counts/pixel),
 `background_fractions`; `scale[j] * background_map` is the fitted additive
 image for frame j. The optimizer leaves are `background_logits` (coarse shared
 shape) and `background_scale_logits` (per-frame levels).
+
+With shot-specific masks, the background remains **one common spatial image**;
+it is not renormalized separately for each shot. The full union-support photon
+count is capped as above, so background on the observed subset is also bounded.
+`background_frame_counts` records full-map counts;
+`background_observed_frame_counts` records counts on each shot's valid pixels.
+`background_fractions` and photon-fraction audits use observed counts.
+`background_mean_observed_map` averages masked background contributions across
+shots and is used in mean signal/background comparisons. L1 uses observed
+background counts per observed pixel; spatial smoothness uses union support.
+The `fraction_frames_near_budget` audit checks the fitted full-map level against
+its cap, even when some of that map is unobserved in a particular shot.
 
 The report and background figures separate signal/background, show frame
 scales in acquisition order, and audit mean/max background photon fractions,
