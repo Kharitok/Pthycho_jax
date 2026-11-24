@@ -9,6 +9,11 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, Int32
 
+from ptycho_jax.transmission.background import (
+    background_frame_counts,
+    background_probability,
+)
+
 
 #
 def gauss_loss(approx_intensity, root_of_measured_intensity, mask):
@@ -280,6 +285,53 @@ def create_parameter_tv_regularizer(
                 value = value / rms
             total = total + weight * tv(value)
         return total
+
+    return regularizer
+
+
+def create_background_regularizer(
+    l1_weight=0.01, smoothness_weight=1.0, scale_weight=0.1
+):
+    """Minimal nonnegative background, smooth shared shape and stable frame levels.
+
+    L1 is mean additive counts per valid detector pixel. Smoothness is the
+    squared spatial gradient of the unit-mean shared shape, excluding edges
+    touching masked pixels. Scale shrinkage is variance of log frame counts.
+    Normalized physical quantities prevent raw-logit gauge changes from evading
+    penalties. Attach to the batched mean loss, once per full-pass update.
+    """
+    if any(
+        not math.isfinite(v) or v < 0
+        for v in (l1_weight, smoothness_weight, scale_weight)
+    ):
+        raise ValueError(
+            "Background regularization weights must be finite and nonnegative."
+        )
+
+    def regularizer(params, fixed):
+        mask = fixed["background_mask"]
+        count = jnp.sum(mask)
+        mean_counts = jnp.mean(background_frame_counts(params, fixed)) / count
+        density = jnp.fft.fftshift(background_probability(params, fixed)) * count
+        centered_mask = jnp.fft.fftshift(mask)
+        dx = jnp.diff(density, axis=-1)
+        dy = jnp.diff(density, axis=-2)
+        mx = centered_mask[:, 1:] & centered_mask[:, :-1]
+        my = centered_mask[1:, :] & centered_mask[:-1, :]
+        smoothness = jnp.sum(jnp.where(mx, dx * dx, 0)) / jnp.maximum(
+            mx.sum(), 1
+        ) + jnp.sum(jnp.where(my, dy * dy, 0)) / jnp.maximum(my.sum(), 1)
+        log_counts = (
+            jnp.log(fixed["background_frame_totals"])
+            + jnp.log(fixed["background_max_fraction"])
+            + jax.nn.log_sigmoid(params["background_scale_logits"])
+        )
+        scale_variance = jnp.mean((log_counts - jnp.mean(log_counts)) ** 2)
+        return (
+            l1_weight * mean_counts
+            + smoothness_weight * smoothness
+            + scale_weight * scale_variance
+        )
 
     return regularizer
 

@@ -273,10 +273,11 @@ def _json_default(value):
 
 
 def _plot_modes(raw, decomposition, output, pixel, filename_prefix=""):
+    from ptycho_jax.visualisation.probe_plotting import probe_display_geometry
     n = len(decomposition["svd_modes"])
     dy, dx = pixel
     ny, nx = raw.shape[-2:]
-    extent = (-nx/2*dx*1e6, nx/2*dx*1e6, -ny/2*dy*1e6, ny/2*dy*1e6)
+    extent, xlabel, ylabel, size_label = probe_display_geometry((ny, nx), pixel)
     svd_power = np.mean(np.sum(abs(decomposition["svd_weights"]) ** 2, axis=-1), axis=0)
     fig, axes = plt.subplots(2, n, figsize=(max(5, 3*n), 6), squeeze=False, layout="constrained")
     for i, mode in enumerate(decomposition["svd_modes"]):
@@ -287,10 +288,11 @@ def _plot_modes(raw, decomposition, output, pixel, filename_prefix=""):
         axes[1, i].imshow(np.angle(mode), cmap="twilight", vmin=-np.pi, vmax=np.pi,
                            extent=extent, origin="lower")
         axes[1, i].set_title("Phase (rad)")
-        axes[1, i].set_xlabel("x (µm)")
+        for row in range(2):
+            axes[row, i].set(xlabel=xlabel, ylabel=ylabel)
     axes[0, 0].set_ylabel("y (µm)")
     axes[1, 0].set_ylabel("y (µm)")
-    fig.suptitle("SVD-orthogonalized spatial basis; transformed weights preserve every fitted field")
+    fig.suptitle("SVD-orthogonalized spatial basis; transformed weights preserve every fitted field\n" + size_label)
     _save(fig, output / "probe_modes_svd.png", filename_prefix)
 
     fig, axes = plt.subplots(2, n, figsize=(max(5, 3*n), 6), squeeze=False, layout="constrained")
@@ -303,11 +305,11 @@ def _plot_modes(raw, decomposition, output, pixel, filename_prefix=""):
                 f"Coherent {i+1}: {100*decomposition['mode_fractions'][i]:.3f}%"
             )
             axes[row, i].set_title(label)
-            axes[row, i].set_xlabel("x (µm)")
+            axes[row, i].set(xlabel=xlabel, ylabel=ylabel)
     axes[0, 0].set_ylabel("y (µm)")
     axes[1, 0].set_ylabel("y (µm)")
     fig.suptitle("HSV: hue = phase; brightness = amplitude^0.5, scaled independently per mode\n"
-                 "Top: fitted basis. Bottom: shot-ensemble coherent modes; constant phase is arbitrary.")
+                 "Top: fitted basis. Bottom: shot-ensemble coherent modes; constant phase is arbitrary.\n" + size_label)
     phase_key = plt.cm.ScalarMappable(norm=plt.Normalize(-np.pi, np.pi), cmap="hsv")
     fig.colorbar(phase_key, ax=axes.ravel().tolist(), orientation="horizontal", fraction=0.035,
                  pad=0.05, label="Phase (rad; black means zero amplitude)")

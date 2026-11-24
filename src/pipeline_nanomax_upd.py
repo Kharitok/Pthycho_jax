@@ -31,6 +31,10 @@ from ptycho_jax.data_loading.nanomax_dataloader import (
     NanoMaxDataset,
     prepare_nanomax_data,
 )
+from ptycho_jax.transmission.background import (
+    background_frame_counts,
+    initialize_background,
+)
 from ptycho_jax.transmission.loss_and_reg import (
     gauss_loss,
     join_loss_and_forward_batched,
@@ -44,6 +48,7 @@ from ptycho_jax.transmission.probe_initialization import (
 from ptycho_jax.transmission.transmission_ptycho_models import (
     construct_point_model_ptycho_transmission,
 )
+from ptycho_jax.visualisation.probe_plotting import probe_display_geometry
 
 DEFAULT_DATAPATH = Path(
     "/gpfs/exfel/data/scratch/kkonstantin/Projects/NanoMax/Test_reconstruction/"
@@ -79,8 +84,10 @@ class ReconstructionConfig:
     weights_learning_rate: float = 0.003
     positions_learning_rate: float = 0.003
     seed: int = 0
+    detector_name: str = "eiger4m"
 
     def __post_init__(self):
+        NanoMaxDataset.detector_path_for_name(self.detector_name)
         if self.n_steps < 1 or self.batch_size < 1:
             raise ValueError("n_steps and batch_size must be positive.")
         if not 1 < self.max_correction_magnitude < self.shift_margin:
@@ -100,6 +107,7 @@ def load_reconstruction_data(config: ReconstructionConfig) -> dict:
         config.detector_distance_m,
         config.detector_pixel_size_m,
         config.defocus_m,
+        detector_name=config.detector_name,
     )
     data = prepare_nanomax_data(
         dataset,
@@ -228,6 +236,17 @@ def initialize_reconstruction(
         "scan_mistakes": jnp.asarray(raw_shifts, dtype=jnp.float32),
     }
     fixed = {"sample_positions": jnp.asarray(positions, dtype=jnp.int32)}
+    background_enabled = getattr(config, "background", False)
+    if background_enabled:
+        background_params, background_fixed = initialize_background(
+            data["detector_mask"],
+            data["total_ints"],
+            config.background_grid_shape,
+            config.background_initial_fraction,
+            config.background_max_fraction,
+        )
+        params.update(background_params)
+        fixed.update(background_fixed)
     model_parameters = {
         "probe_type": "fluctuating",
         "sample_type": "complex",
@@ -237,6 +256,7 @@ def initialize_reconstruction(
         "probe_shape": tuple(probe_shape),
         "max_correction_magnitude": config.max_correction_magnitude,
         "shift_margin": config.shift_margin,
+        "background_type": "shared_scaled" if background_enabled else "none",
     }
     models = construct_point_model_ptycho_transmission(model_parameters)
     predict_batch = jax.jit(jax.vmap(models["point_model"], in_axes=(None, None, 0)))
@@ -255,8 +275,20 @@ def initialize_reconstruction(
     predicted_totals = np.asarray(predicted_totals)
     if not np.isfinite(predicted_totals).all() or np.any(predicted_totals <= 0):
         raise ValueError("Initial forward model has invalid frame energies.")
+    background_counts = (
+        np.asarray(background_frame_counts(params, fixed), dtype=float)
+        if background_enabled
+        else 0.0
+    )
+    signal_totals = predicted_totals - background_counts
+    if np.any(signal_totals <= 0):
+        raise ValueError(
+            "Initial diffraction signal must have positive frame energies."
+        )
     params["modal_weights"] *= jnp.asarray(
-        np.sqrt(data["total_ints"] / predicted_totals)[:, None, None],
+        np.sqrt((data["total_ints"] - background_counts) / signal_totals)[
+            :, None, None
+        ],
         dtype=jnp.float32,
     )
     return {
@@ -361,18 +393,32 @@ def save_preparation_figure(data: dict, output: Path, filename_prefix: str = "")
     _save_figure(fig, output / f"{filename_prefix}preparation.png")
 
 
-def _save_probe(modes, path: Path, title: str):
+def _save_probe(modes, path: Path, title: str, pixel_size_m=None):
     modes = np.asarray(modes)
+    extent, xlabel, ylabel, size_label = probe_display_geometry(
+        modes.shape[-2:], pixel_size_m
+    )
     fig, axes = plt.subplots(
         2, len(modes), figsize=(max(5, 3 * len(modes)), 6), squeeze=False
     )
     for i, mode in enumerate(modes):
-        image = axes[0, i].imshow(np.abs(mode), cmap="viridis")
+        image = axes[0, i].imshow(
+            np.abs(mode), cmap="viridis", extent=extent, origin="lower"
+        )
         fig.colorbar(image, ax=axes[0, i], shrink=0.7)
         axes[0, i].set_title(f"Mode {i + 1} amplitude")
-        axes[1, i].imshow(np.angle(mode), cmap="twilight", vmin=-np.pi, vmax=np.pi)
+        axes[1, i].imshow(
+            np.angle(mode),
+            cmap="twilight",
+            vmin=-np.pi,
+            vmax=np.pi,
+            extent=extent,
+            origin="lower",
+        )
         axes[1, i].set_title("Phase (rad)")
-    fig.suptitle(title)
+        for row in range(2):
+            axes[row, i].set(xlabel=xlabel, ylabel=ylabel)
+    fig.suptitle(title + "\n" + size_label)
     _save_figure(fig, path)
 
 
@@ -439,11 +485,13 @@ def _save_reconstruction_figures(
         state["params"]["probe_modes"],
         folder / f"{filename_prefix}probe_initial.png",
         "Initial probe modes",
+        pixel_size_m=data["reconstruction_pix_size"],
     )
     _save_probe(
         params["probe_modes"],
         folder / f"{filename_prefix}probe_final.png",
         "Reconstructed probe modes",
+        pixel_size_m=data["reconstruction_pix_size"],
     )
     fig, ax = plt.subplots(figsize=(7, 4))
     ax.semilogy(np.arange(len(history)), history, label="Before each epoch update")

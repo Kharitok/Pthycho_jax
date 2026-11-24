@@ -15,6 +15,8 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Complex, Float, Int32
 
+from ptycho_jax.transmission.background import shared_scaled_background
+
 ### for typechecking
 
 
@@ -192,10 +194,14 @@ def construct_point_model_ptycho_transmission(
         sample_selector=sample_selector, sample_scaler=sample_scaler
     )
 
+    background_type = model_parameters.get("background_type", "none")
+    if background_type not in ("none", "shared_scaled"):
+        raise ValueError("background_type must be 'none' or 'shared_scaled'.")
     detector = prepare_detector(
         intensifier=intensifier,
         binner=prepare_detector_binning(binning_factor),
         non_linearity=identity_non_linearity,
+        background=shared_scaled_background if background_type == "shared_scaled" else None,
     )
     point_model = point_model_ptycho_transmission(
         probe_constructor=probe_constructor,
@@ -541,6 +547,7 @@ def prepare_detector(
     intensifier: Callable,
     binner: Callable,
     non_linearity: Callable,
+    background: Callable | None = None,
 ) -> Callable:
     """
     Prepares a detector function that converts wavefields into measured intensities.
@@ -549,6 +556,8 @@ def prepare_detector(
         intensifier: Function that applies an intensifier to the propagated wavefield.
         binner: Function that applies binning to the propagated wavefield.
         non_linearity: Function that applies a non-linear response to the propagated wavefield.
+        background: Optional additive counts callback (params, fixed, index).
+            Added after intensity binning and before sensor nonlinearity.
 
     Returns:
         A function that takes in the propagated wavefield and returns the measured intensities.
@@ -564,6 +573,8 @@ def prepare_detector(
             propagated_wave, optimizable_params, fixed_params, pos_index
         )
         intensity = binner(intensity, optimizable_params, fixed_params, pos_index)
+        if background is not None:
+            intensity = intensity + background(optimizable_params, fixed_params, pos_index)
         intensity = non_linearity(
             intensity, optimizable_params, fixed_params, pos_index
         )
