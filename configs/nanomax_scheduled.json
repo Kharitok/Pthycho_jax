@@ -4,16 +4,21 @@
   "output_dir": "../results/nanomax",
   "tag": "json_settings_test",
   "device": "gpu",
-  "modes": [5],
+  "modes": [
+    5
+  ],
   "n_steps": 400,
   "batch_size": 13,
   "seed": 0,
   "detector_distance_m": 7.18,
-  "detector_pixel_size_m": 0.000075,
+  "detector_pixel_size_m": 7.5e-05,
   "defocus_m": 0.0015,
-  "crop_shape": [512, 512],
+  "crop_shape": [
+    512,
+    512
+  ],
   "crop_center": null,
-  "scan_coords_unit": 0.000001,
+  "scan_coords_unit": 1e-06,
   "energy_unit": 1.0,
   "motor_x_sign": 1,
   "motor_y_sign": -1,
@@ -33,16 +38,34 @@
   "probe_tv_weight": 0.0,
   "tv_p": 2.0,
   "tv_q": 1.0,
-  "tv_epsilon": 0.000001,
+  "tv_epsilon": 1e-06,
   "tv_normalize": true,
-  "regularization_schedule": ["50:350"],
+  "regularization_schedule": [
+    "50:350"
+  ],
   "probe_support": true,
   "probe_support_radius_px": 140.0,
   "probe_support_decay_px": 40.0,
   "probe_support_center_px": null,
-  "projection_schedule": ["100:400:5", "399"],
+  "projection_schedule": [
+    "100:400:5",
+    "399"
+  ],
   "diagnostics": true,
   "half_range_m": 0.003,
   "z_samples": 201,
-  "padding_factor": 3
+  "padding_factor": 3,
+  "background": false,
+  "background_grid_shape": [
+    16,
+    16
+  ],
+  "background_initial_fraction": 0.0001,
+  "background_max_fraction": 0.05,
+  "background_learning_rate": 0.03,
+  "background_scale_learning_rate": 0.03,
+  "background_start_step": 100,
+  "background_l1_weight": 0.01,
+  "background_smoothness_weight": 1.0,
+  "background_scale_weight": 0.1
 }

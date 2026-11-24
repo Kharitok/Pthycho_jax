@@ -19,6 +19,24 @@ Use `--detector-name eiger1m` (JSON `"detector_name": "eiger1m"`) to select
 Eiger4M remains the default. EH2 scan 000005 has a separate configuration in
 `configs/nanomax_eh2_000005.json`, using its 3.635 m distance and 1.0 mm defocus.
 
+Reconstruction and diagnostic probe panels label every image with physical
+`x (µm)` / `y (µm)` axes and state the full x/y field of view. This is the
+array extent, not a beam waist; calibrated beam widths remain in diagnostics.
+
+To fit a smooth additive detector background, enable `--background` or JSON
+`"background": true`. It shares one coarse nonnegative detector image across
+frames, with a fitted photon level per frame and a configurable measured-photon
+budget cap (5% by default). L1 amount, spatial smoothness and log-level variance
+penalties discourage absorption of useful scattering. These penalties follow
+`regularization_schedule`; background positivity/budget remain structural.
+The small initialized background is present throughout, but its parameter
+learning starts at `--background-start-step` (100 by default).
+
+The report saves physical background maps/scales, photon-fraction audits and
+bright-pixel leakage, plus separate background images and acquisition-order
+scale plots. See the [JSON reference](NANOMAX_JSON.md) for each parameter.
+`configs/nanomax_eh2_background.json` supplies a full-data validation example.
+
 ```bash
 # Five-mode, 400-update AD with scheduled TV/support and full diagnostics.
 PYTHONPATH=src .venv/bin/python src/pipeline_nanomax_upd_v2.py \

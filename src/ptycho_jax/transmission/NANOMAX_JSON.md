@@ -115,7 +115,83 @@ dependence remains even with RMS normalization.
 Repeated support application repeatedly attenuates the tapered region. Null
 radius/decay values select automatic dimensions; they do not disable projection.
 
+## Additive detector background
+
+The background is optional and disabled by default. With it enabled,
+`I_pred[j] = I_signal[j] + frame_counts[j] * probability`, after intensity
+binning and before sensor response. The shared probability image is
+nonnegative, zero on invalid pixels, and sums to one on valid detector pixels.
+Its coarse logits are interpolated in centered detector coordinates, then
+converted to the model's unshifted FFT order. This restricts fine structure
+that could otherwise mimic useful diffraction features.
+
+`frame_counts[j] = measured_total[j] * background_max_fraction * sigmoid(level_logit[j])`.
+The bound is structural and remains active even when regularizers/projections
+are scheduled off. Initial probe weights are calibrated against measured
+photons minus the initial background, avoiding double counting.
+
+| JSON key | Type and default | Meaning |
+| --- | --- | --- |
+| `background` | boolean; `false` | Optimize a single shared additive detector background with a level for each frame. `false` retains the original signal-only model. |
+| `background_grid_shape` | two integers >=2; `[16,16]` | Shared log-density grid. Each dimension must fit within the detector crop when enabled. Smaller grids limit background complexity more strongly. |
+| `background_initial_fraction` | positive number; `0.0001` | Initial fraction of each frame's measured valid-pixel photons assigned to background. Must be below the maximum. A small positive value gives usable gradients. |
+| `background_max_fraction` | number in `(initial_fraction,1)`; `0.05` | Maximum allowed background fraction of each frame's measured valid-pixel photon count. This is not a per-pixel or predicted-intensity bound. |
+| `background_learning_rate` | nonnegative number; `0.03` | Adam learning rate for shared shape logits. Zero freezes this shape's gradient updates. |
+| `background_scale_learning_rate` | nonnegative number; `0.03` | Adam learning rate for per-frame level logits. Zero freezes these levels' gradient updates. |
+| `background_start_step` | nonnegative integer; `100` | First full-pass update allowed to change background parameters. The small initialized background is modeled before this step. If >=`n_steps`, it stays at initialization. |
+| `background_l1_weight` | nonnegative number; `0.01` | Penalizes mean background counts per valid pixel, preferring the smallest background supported by data. |
+| `background_smoothness_weight` | nonnegative number; `1.0` | Penalizes squared spatial gradients of the unit-mean shared shape. Edges touching invalid detector pixels are excluded. |
+| `background_scale_weight` | nonnegative number; `0.1` | Penalizes variance of log per-frame background photon counts, discouraging excessive scale jitter while permitting genuine changes. |
+
+The three penalties operate on physical normalized quantities, not arbitrary
+raw-logit scales. They follow `regularization_schedule` together with TV and
+custom penalties. For background fitting, keep this schedule active unless
+you deliberately want unregularized intervals. Setting a weight to zero turns
+off only that penalty; a coarse shape, nonnegativity and the photon cap still
+apply. Set `"background": false` or CLI `--no-background` to remove the component
+entirely. Freezing both background learning rates retains its initial counts;
+it does not remove the component.
+
+Saved physical arrays are `background_map` (mean counts/pixel),
+`background_scales` (mean one), `background_frame_counts` and
+`background_fractions`; `scale[j] * background_map` is the fitted additive
+image for frame j. The optimizer leaves are `background_logits` (coarse shared
+shape) and `background_scale_logits` (per-frame levels).
+
+The report and background figures separate signal/background, show frame
+scales in acquisition order, and audit mean/max background photon fractions,
+bright-pixel leakage, budget saturation and dark-pixel dominance. Background
+may exceed the signal in dark pixels without dominating useful photons.
+Photon caps and smoothness reduce ambiguity; preserved object features and
+comparison with a signal-only control remain important checks.
+
+Example with TV off and background penalties active at all updates:
+
+```json
+{
+  "background": true,
+  "background_grid_shape": [16, 16],
+  "background_max_fraction": 0.05,
+  "background_start_step": 100,
+  "regularization_schedule": ["all"],
+  "sample_tv_weight": 0.0,
+  "probe_tv_weight": 0.0
+}
+```
+
 ## Diagnostics
+
+The background example can be run with
+`--config configs/nanomax_eh2_background.json`. It was executed with 1000
+updates/five modes on EH2 scan 000005. Fitted background was **0.0007384%** of
+measured photons on average (**0.0007922%** maximum frame), and **0.0002980%**
+of predicted photons in the bright detector region. Phase correlation to the
+stored signal-only control was **0.999981**, with phase-contrast slope **1.00092**.
+This confirms no useful-signal dominance in that run; it does not establish a
+uniquely calibrated physical background without independent background data.
+Outputs are under
+`results/nanomax_eh2/scan_000005_20261123T232649Z_eh2_background_ad/`;
+start with its prefixed `background_validation.md` or `results.md`.
 
 | JSON key | Type and default | Meaning |
 | --- | --- | --- |
@@ -139,7 +215,7 @@ apply the operation only once. Blank arrays `[]` are invalid. The entries are:
 | JSON schedule value | Behavior for 400 updates |
 | --- | --- |
 | `null` or `["all"]`, or omit the field | Every update, if that operation is enabled |
-| `["none"]` | No updates; disables this operation without changing its configured strength/dimensions |
+| `["none"]` | No penalty/projection applications; background parameter learning is controlled separately |
 | `["50:350"]` | Updates 50 through 349: 300 applications |
 | `["0:400:10"]` | Updates 0,10,…,390: every tenth update |
 | `["100:400:5", "399"]` | Updates 100,105,…,395 plus the final update: 61 applications |
@@ -175,7 +251,7 @@ can reflect TV switching. The final objective uses the last update's TV setting;
 `final_configured_regularization` records weighted TV before schedule gating.
 The saved activity arrays/counts and schedule figure show what actually ran.
 
-## How to switch operations off
+## How to switch TV and projections off
 
 Disable both built-in TV penalties and the support:
 
@@ -213,6 +289,10 @@ Use `"diagnostics": false` or CLI `--no-diagnostics` to skip final diagnostics;
 that setting does not disable TV or projections. `started_utc`, `run_id`, source
 hashes and other generated report fields are output metadata, not JSON inputs.
 The run start timestamp is always generated afresh.
+
+If additive background is enabled, `regularization_schedule: ["none"]` turns
+off its penalties while its parameter learning continues. Set `"background": false`
+to remove background entirely; see its dedicated parameter section above.
 
 ## Executed JSON example
 

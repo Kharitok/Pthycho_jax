@@ -38,8 +38,10 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 
+from ptycho_jax.transmission.background import audit_background, background_components
 from ptycho_jax.transmission.loss_and_reg import (
     combine_regularizers,
+    create_background_regularizer,
     create_parameter_tv_regularizer,
     gauss_loss,
     join_loss_and_forward_batched,
@@ -58,6 +60,7 @@ from ptycho_jax.transmission.schedules import (
 )
 from ptycho_jax.transmission.settings import load_json_settings, validate_setting_values
 from ptycho_jax.visualisation import nanomax_diagnostics
+from ptycho_jax.visualisation.background_diagnostics import save_background_figures
 
 
 @dataclass(frozen=True)
@@ -92,9 +95,51 @@ class ReconstructionConfig(base.ReconstructionConfig):
     half_range_m: float | None = None
     z_samples: int = 201
     padding_factor: int = 3
+    background: bool = False
+    background_grid_shape: tuple[int, int] = (16, 16)
+    background_initial_fraction: float = 1e-4
+    background_max_fraction: float = 0.05
+    background_learning_rate: float = 0.03
+    background_scale_learning_rate: float = 0.03
+    background_start_step: int = 100
+    background_l1_weight: float = 0.01
+    background_smoothness_weight: float = 1.0
+    background_scale_weight: float = 0.1
 
     def __post_init__(self):
         super().__post_init__()
+        if not (
+            math.isfinite(self.background_initial_fraction)
+            and math.isfinite(self.background_max_fraction)
+            and 0 < self.background_initial_fraction < self.background_max_fraction < 1
+        ):
+            raise ValueError(
+                "Require 0 < background_initial_fraction < background_max_fraction < 1."
+            )
+        if len(self.background_grid_shape) != 2 or any(
+            type(n) is not int or n < 2 for n in self.background_grid_shape
+        ):
+            raise ValueError("background_grid_shape must contain two integers >=2.")
+        if self.background and any(
+            a > b
+            for a, b in zip(self.background_grid_shape, self.crop_shape, strict=True)
+        ):
+            raise ValueError("Background grid must not exceed detector crop shape.")
+        if (
+            type(self.background_start_step) is not int
+            or self.background_start_step < 0
+        ):
+            raise ValueError("background_start_step must be a nonnegative integer.")
+        for name in (
+            "background_learning_rate",
+            "background_scale_learning_rate",
+            "background_l1_weight",
+            "background_smoothness_weight",
+            "background_scale_weight",
+        ):
+            value = getattr(self, name)
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be finite and nonnegative.")
         schedule_mask(self.regularization_schedule, self.n_steps)
         schedule_mask(self.projection_schedule, self.n_steps)
         if (
@@ -207,6 +252,14 @@ def run_reconstruction(
             normalize=config.tv_normalize,
         )
     ]
+    if config.background:
+        regularizers.append(
+            create_background_regularizer(
+                config.background_l1_weight,
+                config.background_smoothness_weight,
+                config.background_scale_weight,
+            )
+        )
     if regularizer_fn is not None:
         regularizers.append(regularizer_fn)
     regularizer = jax.jit(combine_regularizers(regularizers))
@@ -250,6 +303,17 @@ def run_reconstruction(
         config.sample_tv_weight > 0
         or config.probe_tv_weight > 0
         or regularizer_fn is not None
+        or (
+            config.background
+            and any(
+                w > 0
+                for w in (
+                    config.background_l1_weight,
+                    config.background_smoothness_weight,
+                    config.background_scale_weight,
+                )
+            )
+        )
     )
     projection_active = schedule_mask(
         config.projection_schedule, config.n_steps
@@ -264,9 +328,20 @@ def run_reconstruction(
     data_loss = join_loss_and_forward_batched(
         gauss_loss, state["models"]["point_model"]
     )
-    loss_and_grad = jax.jit(
-        jax.value_and_grad(join_loss_and_reg(data_loss, scheduled_reg))
-    )
+    raw_loss_and_grad = jax.value_and_grad(join_loss_and_reg(data_loss, scheduled_reg))
+
+    @jax.jit
+    def loss_and_grad(parameters, non_diff, indices, measured, mask):
+        value, gradients = raw_loss_and_grad(
+            parameters, non_diff, indices, measured, mask
+        )
+        if config.background:
+            active = non_diff[STEP_KEY] >= config.background_start_step
+            for name in ("background_logits", "background_scale_logits"):
+                gradients[name] = jnp.where(
+                    active, gradients[name], jnp.zeros_like(gradients[name])
+                )
+        return value, gradients
 
     rates = {
         "sample": config.sample_learning_rate,
@@ -274,11 +349,16 @@ def run_reconstruction(
         "modal_weights": config.weights_learning_rate,
         "scan_mistakes": config.positions_learning_rate,
     }
+    if config.background:
+        rates.update(
+            background_logits=config.background_learning_rate,
+            background_scale_logits=config.background_scale_learning_rate,
+        )
     optimizer = prepare_optimizer(
         {key: {"type": "adam", "learning_rate": lr} for key, lr in rates.items()}
     )
     print(
-        f"Modes={n_modes}: {len(data['total_ints'])} frames; initial data MSE={initial['loss']:.6g}; TV={initial_reg:.6g}",
+        f"Modes={n_modes}: {len(data['total_ints'])} frames; initial data MSE={initial['loss']:.6g}; regularization={initial_reg:.6g}",
         flush=True,
     )
     start = time.perf_counter()
@@ -370,6 +450,40 @@ def run_reconstruction(
         "device_kind": params["sample"].device.device_kind,
         "jax_version": jax.__version__,
     }
+    background_arrays = {}
+    if config.background:
+        components, metrics["background"] = audit_background(
+            params,
+            fixed,
+            data["measured_intensities"].mean(axis=0),
+            final["mean_prediction"],
+            final["predicted_totals"],
+        )
+        metrics["background"].update(
+            grid_shape=config.background_grid_shape,
+            learning_start_step=config.background_start_step,
+        )
+        initial_components = background_components(state["params"], state["fixed"])
+        background_arrays = {
+            "background_map": components["map"],
+            "background_scales": components["scales"],
+            "background_frame_counts": components["frame_counts"],
+            "background_fractions": components["fractions"],
+            "initial_background_map": initial_components["map"],
+            "initial_background_scale_logits": np.asarray(
+                state["params"]["background_scale_logits"]
+            ),
+        }
+        save_background_figures(
+            components,
+            data,
+            final,
+            folder,
+            config.run_id + "_",
+            config.background_max_fraction,
+        )
+    else:
+        metrics["background"] = {"enabled": False}
     # Only the loss marker consumes this replacement; diffraction arrays stay intact.
     coverage = base._save_reconstruction_figures(
         data,
@@ -386,6 +500,7 @@ def run_reconstruction(
     np.savez_compressed(
         config.artifact("reconstruction.npz", folder),
         **jax.device_get(params),
+        **background_arrays,
         run_id=config.run_id,
         tag=config.tag,
         started_utc=config.started_utc,
@@ -536,7 +651,7 @@ def save_run_report(data, config, metrics):
         report += [f"## {n} probe modes", ""]
         report += [
             (
-                f"TV schedule: `{config.regularization_schedule or 'all'}` "
+                f"Regularization schedule (TV/background/custom): `{config.regularization_schedule or 'all'}` "
                 f"({item['regularization_active_steps']} active updates); "
                 f"projection schedule: `{config.projection_schedule or 'all'}` "
                 f"({item['projection_active_steps']} active updates). Steps are zero-based; STOP is exclusive."
@@ -544,7 +659,7 @@ def save_run_report(data, config, metrics):
             (
                 "Penalties act in the gradient calculation; projections act after the corresponding Adam update. "
                 "Adam state and frame shuffling are retained across schedule changes. The final objective uses "
-                "the last update's TV setting; configured TV before scheduling is recorded separately in metrics. "
+                "the last update's penalty setting; configured regularization before scheduling is recorded separately in metrics. "
                 "Objective jumps may reflect a schedule switch."
             ),
             "",
@@ -571,6 +686,34 @@ def save_run_report(data, config, metrics):
                     f"Descriptive position trends (y,x): {drift_y:+.6f}, {drift_x:+.6f} nm per acquisition shot. "
                     "Shot index is not elapsed time; focus is estimated from the reconstructed beam."
                 ),
+                "",
+            ]
+        if item.get("background", {}).get("enabled"):
+            bg = item["background"]
+            report += [
+                (
+                    f"Additive background: shared {config.background_grid_shape} log-intensity grid with per-frame levels; "
+                    f"learning starts at update {config.background_start_step}. "
+                    f"Mean background fraction of measured/predicted photons: {100 * bg['mean_measured_fraction']:.6f}% / "
+                    f"{100 * bg['mean_predicted_fraction']:.6f}%; maximum per-frame measured fraction: {100 * bg['max_frame_measured_fraction']:.6f}%. "
+                    f"Measured-photon cap: {100 * config.background_max_fraction:g}%."
+                ),
+                (
+                    f"Background fraction in the bright-pixel region: {100 * bg['bright_pixel_predicted_fraction']:.6f}%; "
+                    f"dominates total/bright-region signal: **{bg['dominates_signal']}**. "
+                    f"Fraction of valid pixels where background exceeds signal: {100 * bg['fraction_valid_pixels_background_above_signal']:.3f}%. "
+                    "Local background dominance in dark detector pixels differs from dominance of useful diffraction photons."
+                ),
+                (
+                    f"Background L1 / spatial-gradient / log-scale-variance weights: "
+                    f"{config.background_l1_weight:g} / {config.background_smoothness_weight:g} / {config.background_scale_weight:g}. "
+                    "These penalties follow the regularization schedule; positivity, photon budget and coarse shape apply at all updates. "
+                    "Signal/background separation is model dependent; a small photon fraction alone does not establish uniqueness."
+                ),
+                "",
+                f"![Signal and additive background]({config.artifact('background.png', folder).relative_to(config.run_dir)})",
+                "",
+                f"![Background frame scaling]({config.artifact('background_scaling.png', folder).relative_to(config.run_dir)})",
                 "",
             ]
         support = item["probe_support"]
@@ -663,6 +806,9 @@ def run_pipeline(
         "ptycho_jax/transmission/probe_initialization.py",
         "ptycho_jax/transmission/schedules.py",
         "ptycho_jax/transmission/settings.py",
+        "ptycho_jax/transmission/background.py",
+        "ptycho_jax/visualisation/probe_plotting.py",
+        "ptycho_jax/visualisation/background_diagnostics.py",
         "ptycho_jax/visualisation/nanomax_diagnostics.py",
     )
     source_hashes = {}
@@ -784,6 +930,61 @@ def parse_configuration(argv=None):
         help="Multiply all probe modes by a smooth support after scheduled Adam updates.",
     )
     parser.add_argument(
+        "--background",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Optimize one additive detector background with per-frame scaling (default disabled).",
+    )
+    parser.add_argument(
+        "--background-grid-shape",
+        type=int,
+        nargs=2,
+        default=[16, 16],
+        help="Coarse shared background logits [rows columns], interpolated in centered detector coordinates.",
+    )
+    parser.add_argument(
+        "--background-start-step",
+        type=int,
+        default=100,
+        help="Zero-based update at which background parameter learning begins; its initial background is always modeled.",
+    )
+    for name, default, description in (
+        (
+            "initial-fraction",
+            1e-4,
+            "Initial background fraction of measured valid photons.",
+        ),
+        (
+            "max-fraction",
+            0.05,
+            "Hard upper bound per frame on background/measured valid photons.",
+        ),
+        ("learning-rate", 0.03, "Adam rate for the shared background shape logits."),
+        (
+            "scale-learning-rate",
+            0.03,
+            "Adam rate for the per-frame background level logits.",
+        ),
+        (
+            "l1-weight",
+            0.01,
+            "Penalty on mean background counts per valid detector pixel.",
+        ),
+        (
+            "smoothness-weight",
+            1.0,
+            "Penalty on squared spatial gradients of the normalized shared background.",
+        ),
+        (
+            "scale-weight",
+            0.1,
+            "Penalty on variance of log per-frame background photon counts.",
+        ),
+    ):
+        parser.add_argument(
+            "--background-" + name, type=float, default=default, help=description
+        )
+    parser.add_argument(
         "--probe-support-radius-px",
         type=float,
         help="Flat support radius in sample-plane pixels; default 0.4 * min(crop_shape).",
@@ -857,6 +1058,7 @@ def parse_configuration(argv=None):
         "regularization_schedule",
         "projection_schedule",
         "intensity_limits",
+        "background_grid_shape",
     ):
         if args.get(key) is not None:
             args[key] = tuple(args[key])
